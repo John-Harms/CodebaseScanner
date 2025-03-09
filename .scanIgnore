@@ -1,0 +1,10 @@
+# Files to ignore
+# Format for files = 
+# file: (filename here)
+# # symbol is just for commenting purposes.
+
+
+# Folders to ignore
+# Format for folders = 
+# folder: (foldername here)
+# # symbol is just for commenting purposes.
