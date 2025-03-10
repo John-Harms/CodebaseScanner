@@ -51,17 +51,18 @@ def should_ignore_folder(name, ignore_folders):
             return True
     return False
 
-def process_directory(directory, output_file, ignore_files, ignore_folders):
+def process_directory(directory, output_file, ignore_files, ignore_folders, indent_level=0):
     """
     Process a directory:
-      - Write a header block with the directory name and its non-ignored items.
-      - For each non-ignored file, write its name and contents.
-      - Recursively process non-ignored subdirectories.
+      - Write a header with the directory name.
+      - List files (with their content) and subdirectories in separate sections.
+      - Each nested directory is indented for clarity.
     """
+    indent = " " * (indent_level * 4)  # 4 spaces per indent level
     try:
         items = os.listdir(directory)
     except Exception as e:
-        output_file.write(f"{{Error reading directory {directory}: {e}}}\n")
+        output_file.write(f"{indent}Error reading directory {directory}: {e}\n")
         return
 
     non_ignored_files = []
@@ -77,28 +78,40 @@ def process_directory(directory, output_file, ignore_files, ignore_folders):
             if not should_ignore_folder(item, ignore_folders):
                 non_ignored_dirs.append(item)
 
-    all_items = non_ignored_files + non_ignored_dirs
-
-    output_file.write("{\n")
-    output_file.write(f"  Directory: {directory}\n")
-    output_file.write(f"  Items: {', '.join(all_items)}\n")
-
-    # Process each non-ignored file.
-    for file in non_ignored_files:
-        file_path = os.path.join(directory, file)
-        output_file.write(f"  File: {file}\n")
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            output_file.write(f"    Content: {content}\n")
-        except Exception as e:
-            output_file.write(f"    Error reading file: {e}\n")
-    output_file.write("}\n\n")
-
-    # Recursively process non-ignored subdirectories.
-    for dir_name in non_ignored_dirs:
-        dir_path = os.path.join(directory, dir_name)
-        process_directory(dir_path, output_file, ignore_files, ignore_folders)
+    # Write the directory header.
+    output_file.write(f"{indent}Directory: {directory}\n")
+    
+    # List Files
+    if non_ignored_files:
+        output_file.write(f"{indent}  Files:\n")
+        for file in non_ignored_files:
+            output_file.write(f"{indent}    {file}:\n")
+            file_path = os.path.join(directory, file)
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                # Split content into lines and indent each line.
+                content_lines = content.splitlines() or [""]
+                output_file.write(f"{indent}      Content:\n")
+                for line in content_lines:
+                    output_file.write(f"{indent}        {line}\n")
+            except Exception as e:
+                output_file.write(f"{indent}      Error reading file: {e}\n")
+    else:
+        output_file.write(f"{indent}  No Files Found.\n")
+    
+    # List Subdirectories
+    if non_ignored_dirs:
+        output_file.write(f"{indent}  Subdirectories:\n")
+        for dir_name in non_ignored_dirs:
+            output_file.write(f"{indent}    {dir_name}:\n")
+            sub_dir_path = os.path.join(directory, dir_name)
+            # Recursively process each subdirectory with increased indentation.
+            process_directory(sub_dir_path, output_file, ignore_files, ignore_folders, indent_level + 1)
+    else:
+        output_file.write(f"{indent}  No Subdirectories Found.\n")
+    
+    output_file.write("\n")
 
 def main():
     # Locate the .scanIgnore file in the same directory as this script.
