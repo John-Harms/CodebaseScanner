@@ -2,6 +2,46 @@ import os
 from tkinter import Tk
 from tkinter.filedialog import askdirectory, asksaveasfilename
 
+SETTINGS_FILE = ".scan_config.txt"
+
+def load_settings():
+    """
+    Load saved directory settings from the settings file.
+    Returns a dictionary with 'scan_directory' and 'save_directory'.
+    If the settings file does not exist or settings are not found, returns None for those settings.
+    """
+    settings = {}
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    settings_path = os.path.join(script_dir, SETTINGS_FILE)
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if "=" in line:
+                        key, value = line.split("=", 1)
+                        settings[key.strip()] = value.strip()
+        except Exception as e:
+            print(f"Error loading settings: {e}")
+            return {} # Return empty settings to use defaults
+
+    return settings
+
+def save_settings(scan_directory, save_directory):
+    """
+    Save the directory settings to the settings file.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    settings_path = os.path.join(script_dir, SETTINGS_FILE)
+    try:
+        with open(settings_path, "w") as f:
+            if scan_directory:
+                f.write(f"scan_directory={scan_directory}\n")
+            if save_directory:
+                f.write(f"save_directory={save_directory}\n")
+    except Exception as e:
+        print(f"Error saving settings: {e}")
+
 def load_ignore_lists(ignore_file_path):
     """
     Load ignore patterns from a .scanIgnore file.
@@ -80,7 +120,7 @@ def process_directory(directory, output_file, ignore_files, ignore_folders, inde
 
     # Write the directory header.
     output_file.write(f"{indent}Directory: {directory}\n")
-    
+
     # List Files
     if non_ignored_files:
         output_file.write(f"{indent}  Files:\n")
@@ -99,7 +139,7 @@ def process_directory(directory, output_file, ignore_files, ignore_folders, inde
                 output_file.write(f"{indent}      Error reading file: {e}\n")
     else:
         output_file.write(f"{indent}  No Files Found.\n")
-    
+
     # List Subdirectories
     if non_ignored_dirs:
         output_file.write(f"{indent}  Subdirectories:\n")
@@ -110,19 +150,24 @@ def process_directory(directory, output_file, ignore_files, ignore_folders, inde
             process_directory(sub_dir_path, output_file, ignore_files, ignore_folders, indent_level + 1)
     else:
         output_file.write(f"{indent}  No Subdirectories Found.\n")
-    
+
     output_file.write("\n")
 
 def main():
+    # Load saved settings
+    settings = load_settings()
+    last_scan_directory = settings.get('scan_directory')
+    last_save_directory = settings.get('save_directory')
+
     # Locate the .scanIgnore file in the same directory as this script.
     script_dir = os.path.dirname(os.path.abspath(__file__))
     ignore_file_path = os.path.join(script_dir, ".scanIgnore")
     ignore_files, ignore_folders = load_ignore_lists(ignore_file_path)
-    
+
     # Hide the Tkinter root window.
     Tk().withdraw()
     # Ask the user to select a directory to scan.
-    selected_directory = askdirectory(title="Select a Directory")
+    selected_directory = askdirectory(title="Select a Directory", initialdir=last_scan_directory)
     if not selected_directory:
         print("No directory selected. Exiting.")
         return
@@ -131,7 +176,8 @@ def main():
     output_filepath = asksaveasfilename(
         title="Save Output File As",
         defaultextension=".txt",
-        filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")]
+        filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
+        initialdir=last_save_directory
     )
     if not output_filepath:
         print("No output file selected. Exiting.")
@@ -142,6 +188,11 @@ def main():
         process_directory(selected_directory, output_file, ignore_files, ignore_folders)
 
     print(f"Directory contents written to {output_filepath}")
+
+    # Save settings for next run
+    save_directory_path = os.path.dirname(output_filepath)
+    save_settings(selected_directory, save_directory_path)
+
 
 if __name__ == "__main__":
     main()

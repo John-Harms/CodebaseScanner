@@ -8,3 +8,5 @@
 # Format for folders = 
 # folder: (foldername here)
 # # symbol is just for commenting purposes.
+
+folder: node_modules
