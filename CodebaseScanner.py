@@ -1,8 +1,51 @@
 import os
+import os.path  # Explicitly import os.path for splitext
 from tkinter import Tk
 from tkinter.filedialog import askdirectory, asksaveasfilename
 
 SETTINGS_FILE = ".scan_config.txt"
+
+# Map common file extensions to Markdown language hints
+# Add more mappings as needed
+LANG_MAP = {
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".html": "html",
+    ".css": "css",
+    ".scss": "scss",
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".md": "markdown",
+    ".sh": "bash",
+    ".java": "java",
+    ".cs": "csharp",
+    ".cpp": "cpp",
+    ".c": "c",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".go": "go",
+    ".php": "php",
+    ".rb": "ruby",
+    ".rs": "rust",
+    ".swift": "swift",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".sql": "sql",
+    ".xml": "xml",
+    ".dockerfile": "dockerfile",
+    ".txt": "text", # Explicitly map txt to text
+}
+
+def get_language_hint(filename):
+    """
+    Determines the Markdown language hint based on the file extension.
+    """
+    _, ext = os.path.splitext(filename)
+    return LANG_MAP.get(ext.lower(), "") # Return empty string if extension not found
 
 def load_settings():
     """
@@ -69,13 +112,17 @@ def load_ignore_lists(ignore_file_path):
                         ignore_folders.append(pattern)
                 else:
                     # If no prefix, apply to both files and folders.
-                    ignore_files.append(line)
-                    ignore_folders.append(line)
+                    # Ensure empty lines don't add empty patterns
+                    if line:
+                        ignore_files.append(line)
+                        ignore_folders.append(line)
     return ignore_files, ignore_folders
 
 def should_ignore_file(name, ignore_files):
     """
-    Check if the file name contains any ignore pattern as a substring.
+    Check if the file name matches any ignore pattern.
+    Now checks for exact match or if the pattern is a substring *if* it's intended
+    (current implementation checks substring presence). Let's keep substring for flexibility.
     """
     for pattern in ignore_files:
         if pattern in name:
@@ -84,25 +131,32 @@ def should_ignore_file(name, ignore_files):
 
 def should_ignore_folder(name, ignore_folders):
     """
-    Check if the folder name contains any ignore pattern as a substring.
+    Check if the folder name matches any ignore pattern.
+    Now checks for exact match or if the pattern is a substring *if* it's intended
+    (current implementation checks substring presence). Let's keep substring for flexibility.
     """
     for pattern in ignore_folders:
         if pattern in name:
             return True
     return False
 
-def process_directory(directory, output_file, ignore_files, ignore_folders, indent_level=0):
+def process_directory(directory, output_file, ignore_files, ignore_folders, level=0):
     """
-    Process a directory:
-      - Write a header with the directory name.
-      - List files (with their content) and subdirectories in separate sections.
-      - Each nested directory is indented for clarity.
+    Process a directory and write its structure and contents in Markdown format.
+      - Uses Markdown headings for directories, increasing level for nesting.
+      - Lists files with their content enclosed in triple-backtick code blocks.
+      - Recursively processes non-ignored subdirectories.
     """
-    indent = " " * (indent_level * 4)  # 4 spaces per indent level
+    heading_level = level + 2 # Start directory headings at ##
+    heading_prefix = "#" * heading_level
+
     try:
         items = os.listdir(directory)
     except Exception as e:
-        output_file.write(f"{indent}Error reading directory {directory}: {e}\n")
+        # Write error clearly if directory can't be read
+        output_file.write(f"{heading_prefix} Error Reading Directory\n\n")
+        output_file.write(f"**Path:** `{directory}`\n\n")
+        output_file.write(f"**Error:** `{e}`\n\n")
         return
 
     non_ignored_files = []
@@ -119,39 +173,44 @@ def process_directory(directory, output_file, ignore_files, ignore_folders, inde
                 non_ignored_dirs.append(item)
 
     # Write the directory header.
-    output_file.write(f"{indent}Directory: {directory}\n")
+    output_file.write(f"{heading_prefix} Directory: {os.path.basename(directory)}\n\n")
+    output_file.write(f"**Path:** `{directory}`\n\n")
 
     # List Files
     if non_ignored_files:
-        output_file.write(f"{indent}  Files:\n")
+        file_heading_level = heading_level + 1
+        file_heading_prefix = "#" * file_heading_level
+        output_file.write(f"{file_heading_prefix} Files\n\n")
         for file in non_ignored_files:
-            output_file.write(f"{indent}    {file}:\n")
             file_path = os.path.join(directory, file)
+            output_file.write(f"**File:** `{file}`\n")
+            # Optional: Add full path if needed, e.g.:
+            # output_file.write(f"**File:** `{file}` (`{file_path}`)\n")
+            lang_hint = get_language_hint(file)
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     content = f.read()
-                # Split content into lines and indent each line.
-                content_lines = content.splitlines() or [""]
-                output_file.write(f"{indent}      Content:\n")
-                for line in content_lines:
-                    output_file.write(f"{indent}        {line}\n")
+                output_file.write(f"```{lang_hint}\n")
+                output_file.write(content)
+                output_file.write(f"\n```\n\n") # Ensure newline before closing backticks
             except Exception as e:
-                output_file.write(f"{indent}      Error reading file: {e}\n")
-    else:
-        output_file.write(f"{indent}  No Files Found.\n")
+                output_file.write(f"**Error reading file:** `{e}`\n\n")
+    # else:
+        # Optionally indicate no files - decided against for cleaner output
+        # output_file.write(f"*No processable files found in this directory.*\n\n")
 
-    # List Subdirectories
+
+    # Process Subdirectories Recursively
+    # No explicit "Subdirectories" heading needed, the nested structure provides this.
     if non_ignored_dirs:
-        output_file.write(f"{indent}  Subdirectories:\n")
         for dir_name in non_ignored_dirs:
-            output_file.write(f"{indent}    {dir_name}:\n")
             sub_dir_path = os.path.join(directory, dir_name)
-            # Recursively process each subdirectory with increased indentation.
-            process_directory(sub_dir_path, output_file, ignore_files, ignore_folders, indent_level + 1)
-    else:
-        output_file.write(f"{indent}  No Subdirectories Found.\n")
+            # Recursively process each subdirectory with increased level.
+            process_directory(sub_dir_path, output_file, ignore_files, ignore_folders, level + 1)
+    # else:
+         # Optionally indicate no subdirectories - decided against for cleaner output
+         # output_file.write(f"*No processable subdirectories found.*\n\n")
 
-    output_file.write("\n")
 
 def main():
     # Load saved settings
@@ -167,31 +226,39 @@ def main():
     # Hide the Tkinter root window.
     Tk().withdraw()
     # Ask the user to select a directory to scan.
-    selected_directory = askdirectory(title="Select a Directory", initialdir=last_scan_directory)
+    selected_directory = askdirectory(title="Select Directory to Scan", initialdir=last_scan_directory)
     if not selected_directory:
         print("No directory selected. Exiting.")
         return
 
     # Ask the user to choose a location and name for the output file.
     output_filepath = asksaveasfilename(
-        title="Save Output File As",
-        defaultextension=".txt",
-        filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
-        initialdir=last_save_directory
+        title="Save Scan Output As",
+        defaultextension=".md", # Default to Markdown extension
+        filetypes=[("Markdown Files", "*.md"), ("Text Files", "*.txt"), ("All Files", "*.*")],
+        initialdir=last_save_directory,
+        initialfile=f"{os.path.basename(selected_directory)}_scan.md" # Suggest a filename
     )
     if not output_filepath:
         print("No output file selected. Exiting.")
         return
 
     # Process the directory and save the output.
-    with open(output_filepath, "w", encoding="utf-8") as output_file:
-        process_directory(selected_directory, output_file, ignore_files, ignore_folders)
+    try:
+        with open(output_filepath, "w", encoding="utf-8") as output_file:
+            # Add a top-level heading for the scan
+            output_file.write(f"# Codebase Scan: {os.path.basename(selected_directory)}\n\n")
+            # Start processing from the selected directory at level 0
+            process_directory(selected_directory, output_file, ignore_files, ignore_folders, level=0)
 
-    print(f"Directory contents written to {output_filepath}")
+        print(f"Directory contents successfully written to {output_filepath}")
 
-    # Save settings for next run
-    save_directory_path = os.path.dirname(output_filepath)
-    save_settings(selected_directory, save_directory_path)
+        # Save settings for next run
+        save_directory_path = os.path.dirname(output_filepath)
+        save_settings(selected_directory, save_directory_path)
+
+    except Exception as e:
+        print(f"An error occurred during scanning or writing the file: {e}")
 
 
 if __name__ == "__main__":
