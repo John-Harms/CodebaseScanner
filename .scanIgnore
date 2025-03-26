@@ -1,21 +1,11 @@
 # Files to ignore
-# Format for files = 
-# file: (filename here)
-# # symbol is just for commenting purposes.
-file: package-lock.json
 file: .git
 file: eslint.config.js
-file: 
-
-
+file: package-lock.json
 
 # Folders to ignore
-# Format for folders = 
-# folder: (foldername here)
-# # symbol is just for commenting purposes.
-
-folder: node_modules
-folder: dist
-folder: dist-ssr
 folder: .git
 folder: build
+folder: dist
+folder: dist-ssr
+folder: node_modules
