@@ -1,1 +1,4 @@
 .scan_config.txt
+build
+.venv
+dist
