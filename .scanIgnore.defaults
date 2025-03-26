@@ -1,0 +1,11 @@
+# Files to ignore
+file: .git
+file: eslint.config.js
+file: package-lock.json
+
+# Folders to ignore
+folder: .git
+folder: build
+folder: dist
+folder: dist-ssr
+folder: node_modules
