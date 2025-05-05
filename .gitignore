@@ -2,3 +2,6 @@
 build
 .venv
 dist
+.scanIgnore
+.scanIgnore.defaults
+.whiteListScanIgnore

@@ -5,6 +5,7 @@ file: package-lock.json
 
 # Folders to ignore
 folder: .git
+folder: .venv
 folder: build
 folder: dist
 folder: dist-ssr
