@@ -133,10 +133,8 @@ def save_ignore_rules(ignore_file_path, ignore_files, ignore_folders):
 # parse_ignore_lines function (Used by the scan thread - Accepts path)
 def parse_ignore_lines(lines):
     """
-    Parses lines STRICTLY into file/folder patterns.
-    Used by the background scan process.
-    Only lines starting with 'file:' or 'folder:' are considered valid.
-    """
+    Parses lines STRICTLY into file/folder patterns. Used by the background scan process.
+    Only lines starting with 'file:' or 'folder:' are considered valid.    """
     ignore_files = []
     ignore_folders = []
     for line in lines:
@@ -190,7 +188,6 @@ def create_empty_file(filepath):
 def should_process_item(item_name, item_path, is_file, rules_files, rules_folders, filter_mode, is_whitelisted_folder_content=False):
     """
     Determines if a file or folder should be processed based on the filter mode and rules.
-
     Args:
         item_name (str): The basename of the file or folder.
         item_path (str): The full path of the item (currently unused, but available).
@@ -200,7 +197,6 @@ def should_process_item(item_name, item_path, is_file, rules_files, rules_folder
         filter_mode (str): Either FILTER_BLACKLIST or FILTER_WHITELIST.
         is_whitelisted_folder_content (bool): True if this item is inside a folder
                                              that was explicitly whitelisted.
-
     Returns:
         bool: True if the item should be processed, False otherwise.
     """
@@ -217,13 +213,22 @@ def should_process_item(item_name, item_path, is_file, rules_files, rules_folder
     elif filter_mode == FILTER_WHITELIST:
         # Whitelist:
         if is_whitelisted_folder_content:
-            # If parent folder was whitelisted, include everything inside it
-            return True
+            # If parent folder was whitelisted, include everything inside it (files and folders)
+            # UNLESS a more specific rule for this item type excludes it (not current logic, but for future thought)
+            # For now, if parent is whitelisted, item is considered for inclusion.
+            # Specific check for file or folder rule matching is still needed.
+            pass # Fall through to pattern matching for this item
 
         # Include only if it *exactly* matches a rule (using substring for now as per original)
         for pattern in rules:
             if pattern in item_name:
                 return True # Include if matched
+        # If this is content of a whitelisted folder and it's a file, it should be included
+        # even if it doesn't match a specific 'file:' rule.
+        # Folders inside whitelisted folders are also included to continue recursion.
+        if is_whitelisted_folder_content:
+            return True
+
         return False # Exclude if not matched by any whitelist rule (and not in whitelisted folder)
 
     else:
@@ -238,20 +243,12 @@ def should_process_item(item_name, item_path, is_file, rules_files, rules_folder
 def process_directory(directory, output_file, rules_files, rules_folders, filter_mode, level=0, status_callback=None, is_whitelisted_content=False):
     """
     Processes a directory recursively based on the selected filter mode.
-
-    Args:
-        directory (str): The path to the directory to process.
-        output_file (file object): The file to write the output to.
-        rules_files (list): List of file patterns from the rules file.
-        rules_folders (list): List of folder patterns from the rules file.
-        filter_mode (str): The current filter mode (FILTER_BLACKLIST or FILTER_WHITELIST).
-        level (int): The current recursion depth for heading levels.
-        status_callback (callable, optional): Function to update status messages.
-        is_whitelisted_content (bool): Passed down recursively if the current directory
-                                       is being processed because its parent was whitelisted.
+    Returns True if this directory or any of its children contained whitelisted content, False otherwise.
+    This return value is used in WHITELIST mode to determine if a parent directory header should be printed.
     """
     heading_level = level + 2
     heading_prefix = "#" * heading_level
+    found_whitelisted_content_in_this_branch = False
 
     if status_callback:
         status_callback(f"Processing: {directory}")
@@ -259,85 +256,137 @@ def process_directory(directory, output_file, rules_files, rules_folders, filter
     try:
         items = os.listdir(directory)
     except Exception as e:
-        # Only write error if we were supposed to process this directory
-        # In whitelist mode, errors in non-whitelisted dirs might be noise.
-        # However, if is_whitelisted_content is true, we *expect* to read it.
         if filter_mode == FILTER_BLACKLIST or is_whitelisted_content:
             output_file.write(f"{heading_prefix} Error Reading Directory\n\n")
             output_file.write(f"**Path:** `{directory}`\n\n")
             output_file.write(f"**Error:** `{e}`\n\n")
         if status_callback:
             status_callback(f"Error reading: {directory}")
-        return
+        return False # No content found or processed
 
-    process_files = []
-    process_dirs = []
-    whitelisted_subdirs = [] # Track dirs explicitly whitelisted to pass down state
+    # --- Item Categorization ---
+    # files_to_consider and dirs_to_recurse will hold items that *might* be processed
+    # based on initial rule checks or mode specifics.
+    files_to_consider = []
+    dirs_to_recurse = []
+    
+    # In WHITELIST mode, we need to track if a subdirectory itself matches a folder: rule
+    # to correctly pass down the is_whitelisted_content flag.
+    explicitly_whitelisted_subdirs = [] 
 
     for item in items:
         item_path = os.path.join(directory, item)
         is_file = os.path.isfile(item_path)
 
-        # Determine if this specific item should be processed based on rules and mode
-        should_process = should_process_item(
-            item, item_path, is_file, rules_files, rules_folders, filter_mode, is_whitelisted_content
-        )
-
-        if should_process:
+        if filter_mode == FILTER_BLACKLIST:
+            # Blacklist mode: if item passes should_process_item, add it.
+            if should_process_item(item, item_path, is_file, rules_files, rules_folders, filter_mode, is_whitelisted_content):
+                if is_file:
+                    files_to_consider.append(item)
+                else:
+                    dirs_to_recurse.append(item)
+        
+        elif filter_mode == FILTER_WHITELIST:
+            # Whitelist mode:
+            # 1. All directories are initially added for recursion to find whitelisted files within them.
+            # 2. Files are added if they match a file: rule OR if they are within an already whitelisted folder stream.
+            # 3. We also track if a directory *itself* matches a folder: rule.
             if is_file:
-                process_files.append(item)
+                # A file is processed if it's in whitelisted content OR it matches a 'file:' rule directly.
+                if should_process_item(item, item_path, True, rules_files, rules_folders, filter_mode, is_whitelisted_content):
+                    files_to_consider.append(item)
             else: # Is directory
-                process_dirs.append(item)
-                # If in whitelist mode, check if this specific dir matched a rule
-                if filter_mode == FILTER_WHITELIST and not is_whitelisted_content:
-                     for pattern in rules_folders:
-                         if pattern in item: # Found a match
-                             whitelisted_subdirs.append(item)
-                             break # No need to check other patterns for this dir
+                # ALWAYS add subdirectories to the recursion list in WHITELIST mode to check for nested whitelisted files.
+                dirs_to_recurse.append(item)
+                # Check if this directory itself matches a 'folder:' rule to set 'is_whitelisted_content' for the next level.
+                # This uses should_process_item, but specifically for a directory match, not for general content.
+                if not is_whitelisted_content: # Only check if not already in whitelisted stream
+                    for pattern in rules_folders:
+                        if pattern in item: # Current directory name matches a folder rule
+                            explicitly_whitelisted_subdirs.append(item)
+                            break
+    
+    files_to_consider.sort()
+    dirs_to_recurse.sort()
+
+    # --- Recursive Processing for Subdirectories ---
+    # Stores subdirectory names that, after recursion, were found to contain whitelisted content
+    # or were themselves whitelisted.
+    subdirs_with_content = [] 
+
+    for dir_name in dirs_to_recurse:
+        sub_dir_path = os.path.join(directory, dir_name)
+        
+        # Determine if the next level of recursion is considered whitelisted content.
+        # It is if:
+        #   a) The current directory (self) is part of a whitelisted content stream (is_whitelisted_content is True).
+        #   OR
+        #   b) This specific sub_dir_path (dir_name) matched a 'folder:' rule.
+        next_level_is_whitelisted = is_whitelisted_content or (dir_name in explicitly_whitelisted_subdirs)
+
+        if process_directory(sub_dir_path, output_file, rules_files, rules_folders, filter_mode, level + 1, status_callback, next_level_is_whitelisted):
+            found_whitelisted_content_in_this_branch = True
+            subdirs_with_content.append(dir_name) # This subdir (or its children) has content
+
+    # --- Output Logic ---
+    # Determine if this directory's header should be written.
+
+    # Is the current directory itself explicitly whitelisted by a folder rule?
+    current_dir_is_explicitly_whitelisted = False
+    if filter_mode == FILTER_WHITELIST and not is_whitelisted_content: # if not is_whitelisted_content, it means this dir's parent was not a whitelisted folder
+        dir_basename = os.path.basename(directory)
+        for pattern in rules_folders:
+            if pattern in dir_basename:
+                current_dir_is_explicitly_whitelisted = True
+                break
+    
+    # In WHITELIST mode, found_whitelisted_content_in_this_branch is True if any whitelisted file was found directly
+    # in this directory, or if any subdirectory processed contained whitelisted content.
+    # If files_to_consider is not empty, it means whitelisted files were found directly in this directory.
+    if files_to_consider: # This implies whitelisted files are directly in this folder
+        found_whitelisted_content_in_this_branch = True
 
 
-    # Only create directory entry if there's something to include within it
-    # or if the directory itself was explicitly whitelisted (even if empty)
-    should_write_dir_header = bool(process_files or process_dirs)
-    if filter_mode == FILTER_WHITELIST and not is_whitelisted_content:
-         is_dir_whitelisted = False
-         dir_basename = os.path.basename(directory)
-         for pattern in rules_folders:
-             if pattern in dir_basename: # Check if current directory itself is whitelisted
-                 is_dir_whitelisted = True
-                 break
-         if is_dir_whitelisted:
+    should_write_dir_header = False
+    if filter_mode == FILTER_BLACKLIST:
+        # In Blacklist mode, write header if there are any items (files or dirs) to process,
+        # or if the directory is empty but not ignored (empty dir listing).
+        # The check for ignored directories happens before process_directory is called for them.
+        should_write_dir_header = bool(files_to_consider or dirs_to_recurse or not items) # items refers to os.listdir
+    elif filter_mode == FILTER_WHITELIST:
+        # In Whitelist mode, write header if:
+        # 1. The directory itself is explicitly whitelisted by a 'folder:' rule.
+        # OR
+        # 2. It contains (directly or via subdirectories) any files whitelisted by 'file:' rules.
+        #    (tracked by found_whitelisted_content_in_this_branch)
+        # OR (edge case for whitelisted folder content)
+        # 3. If `is_whitelisted_content` is true, and this directory has *any* content to show (files_to_consider or subdirs_with_content)
+        if current_dir_is_explicitly_whitelisted:
             should_write_dir_header = True
+        elif found_whitelisted_content_in_this_branch: # This covers files in current dir or whitelisted content in subdirs
+             should_write_dir_header = True
+        elif is_whitelisted_content and (files_to_consider or subdirs_with_content): # Content of an already whitelisted folder
+             should_write_dir_header = True
 
 
     if not should_write_dir_header:
-        # In Whitelist mode, if nothing inside matches AND the directory itself isn't whitelisted, skip it entirely.
-        # In Blacklist mode, we always list directories unless they are ignored (which is handled above).
-        # If directory is empty after filtering, still list it in blacklist mode.
-        if filter_mode == FILTER_WHITELIST:
-            return
-        elif not items: # Blacklist mode, empty dir - write header
-            pass # Fall through to write header
+        return found_whitelisted_content_in_this_branch # Still return if any whitelisted items were found for parent's sake
 
-    process_files.sort()
-    process_dirs.sort()
-
-    # Write directory header only if needed
+    # --- Write Directory Header and Files ---
     output_file.write(f"{heading_prefix} Directory: {os.path.basename(directory)}\n\n")
     output_file.write(f"**Path:** `{directory}`\n\n")
 
-
-    if process_files:
+    if files_to_consider:
         file_heading_level = heading_level + 1
         file_heading_prefix = "#" * file_heading_level
         output_file.write(f"{file_heading_prefix} Files\n\n")
-        for file in process_files:
-            file_path = os.path.join(directory, file)
-            output_file.write(f"**File:** `{file}`\n")
-            lang_hint = get_language_hint(file)
+        for file_name in files_to_consider:
+            file_path = os.path.join(directory, file_name)
+            output_file.write(f"**File:** `{file_name}`\n")
+            lang_hint = get_language_hint(file_name)
             try:
-                with open(file_path, "r", encoding="utf-8", errors='ignore') as f:
-                    content = f.read()
+                with open(file_path, "r", encoding="utf-8", errors='ignore') as f_content:
+                    content = f_content.read()
                 output_file.write(f"```{lang_hint}\n")
                 output_file.write(content)
                 output_file.write(f"\n```\n\n")
@@ -345,17 +394,12 @@ def process_directory(directory, output_file, rules_files, rules_folders, filter
                 output_file.write(f"**Error reading file:** `{e}`\n\n")
                 if status_callback:
                     status_callback(f"Error reading file: {file_path}")
+    
+    # The recursive calls to process_directory for subdirectories that *should* be outputted
+    # have already happened and written their content. We don't re-iterate here for output,
+    # only for logic to decide if THIS directory's header was needed.
 
-    if process_dirs:
-        for dir_name in process_dirs:
-            sub_dir_path = os.path.join(directory, dir_name)
-            # Determine if the recursion is happening inside whitelisted content
-            # It is if the current level was whitelisted content OR if this specific subdir matched a whitelist rule
-            next_level_is_whitelisted = is_whitelisted_content or (dir_name in whitelisted_subdirs)
-            process_directory(
-                sub_dir_path, output_file, rules_files, rules_folders,
-                filter_mode, level + 1, status_callback, next_level_is_whitelisted
-            )
+    return found_whitelisted_content_in_this_branch or current_dir_is_explicitly_whitelisted or (is_whitelisted_content and (files_to_consider or subdirs_with_content))
 
 
 # --- GUI Application Class ---
@@ -728,9 +772,9 @@ class CodeScannerApp:
     def _load_and_display_ignore_rules(self, filepath):
         """Loads rules from the specified file, updates internal state, and rebuilds the GUI list."""
         if not filepath:
-             self._clear_and_display_ignore_rules(None)
-             self._update_status("No rules file selected.")
-             return
+            self._clear_and_display_ignore_rules(None)
+            self._update_status("No rules file selected.")
+            return
         try:
             self.ignore_files, self.ignore_folders = load_ignore_rules(filepath)
             self.ignore_dirty = False # Reset dirty flag on successful load
@@ -751,7 +795,7 @@ class CodeScannerApp:
         self._update_ignore_frame_title() # Update title
 
         if filepath:
-             self._update_status(f"Cleared rules list for {os.path.basename(filepath)}. File ready.", clear_after_ms=4000)
+            self._update_status(f"Cleared rules list for {os.path.basename(filepath)}. File ready.", clear_after_ms=4000)
         else:
              self._update_status("No rules file loaded.")
 
@@ -939,8 +983,8 @@ class CodeScannerApp:
             self._save_current_settings()
             self._update_status(f"Saved changes to {os.path.basename(current_path)}", clear_after_ms=3000)
         except Exception as e:
-             messagebox.showerror("Save Error", f"Could not save {os.path.basename(current_path)}:\n{e}")
-             self._update_status(f"Error saving {os.path.basename(current_path)}")
+            messagebox.showerror("Save Error", f"Could not save {os.path.basename(current_path)}:\n{e}")
+            self._update_status(f"Error saving {os.path.basename(current_path)}")
 
 
     # --- Default Ignore Rules Handling ---
@@ -1216,7 +1260,7 @@ class EditDefaultsDialog(Toplevel):
             if not os.path.exists(self.default_filepath):
                 print(f"Default rules file '{self.default_filepath}' not found, creating empty one.")
                 if not create_empty_file(self.default_filepath): # Attempt creation
-                   messagebox.showwarning("File Creation Failed", f"Could not create the default rules file:\n{self.default_filepath}\nProceeding with an empty list.", parent=self)
+                    messagebox.showwarning("File Creation Failed", f"Could not create the default rules file:\n{self.default_filepath}\nProceeding with an empty list.", parent=self)
                    # Keep dialog open with empty lists even if creation failed
 
             # Now load (will return empty lists if file doesn't exist or is empty/unparseable)
@@ -1356,7 +1400,7 @@ class ToolTip:
         scheduled_id = getattr(self, 'id', None)
         if scheduled_id:
             self.widget.after_cancel(scheduled_id)
-            self.id = None
+        self.id = None
 
     def showtip(self):
         if self.tooltip: return # Already shown
