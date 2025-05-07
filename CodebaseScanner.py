@@ -1,16 +1,16 @@
-# CodebaseScanner_gui.py
+# CodebaseScanner.py
 
 import os
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext, Toplevel
+from tkinter import ttk, filedialog, messagebox, scrolledtext, Toplevel, simpledialog
 import threading # Import threading for non-blocking scan
-import shutil # Potentially useful, though not strictly needed for create empty file
-import fnmatch # For potential wildcard matching if needed later (not used for current rules)
+import json # For profiles
+import fnmatch # For potential wildcard matching if needed later
 
 # --- Constants and Configuration ---
-SETTINGS_FILE = ".scan_config.txt"
+PROFILES_FILE = "profiles.json" # New profiles configuration file
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-SETTINGS_PATH = os.path.join(SCRIPT_DIR, SETTINGS_FILE)
+PROFILES_PATH = os.path.join(SCRIPT_DIR, PROFILES_FILE) # Path to profiles.json
 
 # Default ignore file configuration
 DEFAULT_IGNORE_FILE = ".scanIgnore.defaults"
@@ -24,7 +24,7 @@ FILTER_BLACKLIST = "blacklist"
 FILTER_WHITELIST = "whitelist"
 
 
-# Map common file extensions to Markdown language hints (Reused)
+# Map common file extensions to Markdown language hints
 LANG_MAP = {
     ".py": "python", ".js": "javascript", ".jsx": "javascript", ".ts": "typescript",
     ".tsx": "typescript", ".html": "html", ".css": "css", ".scss": "scss",
@@ -35,136 +35,93 @@ LANG_MAP = {
     ".sql": "sql", ".xml": "xml", ".dockerfile": "dockerfile", ".txt": "text",
 }
 
-# --- Core Logic Functions (Adapted for stricter parsing and saving) ---
+# --- Profile Management ---
+
+def load_profiles():
+    """Loads profiles from profiles.json."""
+    if os.path.exists(PROFILES_PATH):
+        try:
+            with open(PROFILES_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("profiles", {}), data.get("last_active_profile_name", None)
+        except Exception as e:
+            print(f"Error loading profiles: {e}")
+    return {}, None
+
+def save_profiles(profiles, last_active_profile_name):
+    """Saves profiles and the last active profile name to profiles.json."""
+    try:
+        with open(PROFILES_PATH, "w", encoding="utf-8") as f:
+            json.dump({"profiles": profiles, "last_active_profile_name": last_active_profile_name}, f, indent=4)
+    except Exception as e:
+        print(f"Error saving profiles: {e}")
+
+
+# --- Core Logic Functions ---
 
 def get_language_hint(filename):
     """Determines the Markdown language hint based on the file extension."""
     _, ext = os.path.splitext(filename)
     return LANG_MAP.get(ext.lower(), "")
 
-def load_settings():
-    """Loads saved directory, ignore file path, and filter mode settings."""
-    settings = {}
-    if os.path.exists(SETTINGS_PATH):
-        try:
-            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
-                 for line in f:
-                    line = line.strip()
-                    if "=" in line:
-                        key, value = line.split("=", 1)
-                        settings[key.strip()] = value.strip()
-        except Exception as e:
-            print(f"Error loading settings: {e}") # Keep console log for debugging
-    # Set default filter mode if not found
-    if 'filter_mode' not in settings:
-        settings['filter_mode'] = FILTER_BLACKLIST
-    return settings
-
-def save_settings(scan_directory, save_directory, ignore_file_path, filter_mode):
-    """Saves the directory, ignore file path, and filter mode settings."""
-    try:
-        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-            if scan_directory:
-                f.write(f"scan_directory={scan_directory}\n")
-            if save_directory:
-                f.write(f"save_directory={save_directory}\n")
-            if ignore_file_path: # Save the selected ignore file path
-                f.write(f"ignore_file_path={ignore_file_path}\n")
-            if filter_mode: # Save the filter mode
-                f.write(f"filter_mode={filter_mode}\n")
-    except Exception as e:
-        print(f"Error saving settings: {e}")
-
-# --- Ignore File Handling (Revised to accept path) ---
+# --- Ignore File Handling (Revised for Full Paths) ---
 
 def load_ignore_rules(ignore_file_path):
-    """Loads and strictly parses ignore rules from the specified file."""
+    """
+    Loads and strictly parses ignore rules from the specified file.
+    Rules are now expected to be full paths.
+    """
     ignore_files = []
     ignore_folders = []
-    if ignore_file_path and os.path.exists(ignore_file_path): # Check if path is valid and exists
+    if ignore_file_path and os.path.exists(ignore_file_path):
         try:
             with open(ignore_file_path, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line or line.startswith("#"):
-                        continue # Skip comments and blank lines
+                        continue
+
+                    # Normalize path separators for consistent matching
+                    # The part after "file:" or "folder:" is the path
+                    path_prefix_len = line.find(":") + 1
+                    path_to_store = os.path.normpath(line[path_prefix_len:].strip())
+
 
                     if line.lower().startswith("file:"):
-                        pattern = line[len("file:"):].strip()
-                        if pattern and pattern not in ignore_files: # Prevent duplicates on load
-                            ignore_files.append(pattern)
+                        if path_to_store and path_to_store not in ignore_files:
+                            ignore_files.append(path_to_store)
                     elif line.lower().startswith("folder:"):
-                        pattern = line[len("folder:"):].strip()
-                        if pattern and pattern not in ignore_folders: # Prevent duplicates on load
-                            ignore_folders.append(pattern)
-                    # Ignore lines without a valid prefix
+                        if path_to_store and path_to_store not in ignore_folders:
+                            ignore_folders.append(path_to_store)
         except Exception as e:
             print(f"Error loading or parsing ignore file '{ignore_file_path}': {e}")
-            raise # Re-raise to be caught by GUI load logic
-    # If file doesn't exist or path is invalid, return empty lists
-    ignore_files.sort() # Keep sorted
-    ignore_folders.sort() # Keep sorted
+            raise
+    ignore_files.sort()
+    ignore_folders.sort()
     return ignore_files, ignore_folders
 
 def save_ignore_rules(ignore_file_path, ignore_files, ignore_folders):
-    """Saves the ignore rules to the specified file in the predefined format."""
+    """
+    Saves the ignore rules (full paths) to the specified file.
+    """
     if not ignore_file_path:
         raise ValueError("Cannot save ignore rules: No file path specified.")
     try:
-        # Ensure parent directory exists
         parent_dir = os.path.dirname(ignore_file_path)
         if parent_dir and not os.path.exists(parent_dir):
-            os.makedirs(parent_dir) # Create parent dir if it doesn't exist
+            os.makedirs(parent_dir)
 
         with open(ignore_file_path, "w", encoding="utf-8") as f:
-            f.write("# Files to ignore/include\n") # Adjusted comment
-            # Sort alphabetically before saving for consistency
-            for pattern in sorted(ignore_files):
-                f.write(f"file: {pattern}\n")
+            f.write("# Files to ignore/include (full paths)\n")
+            for path_rule in sorted(ignore_files): # Ensure paths are written with consistent separators
+                f.write(f"file: {os.path.normpath(path_rule)}\n")
 
-            f.write("\n# Folders to ignore/include\n") # Adjusted comment
-            # Sort alphabetically before saving for consistency
-            for pattern in sorted(ignore_folders):
-                f.write(f"folder: {pattern}\n")
+            f.write("\n# Folders to ignore/include (full paths)\n")
+            for path_rule in sorted(ignore_folders): # Ensure paths are written with consistent separators
+                f.write(f"folder: {os.path.normpath(path_rule)}\n")
     except Exception as e:
         print(f"Error saving ignore file '{ignore_file_path}': {e}")
-        raise # Re-raise to be caught by the GUI save logic
-
-# parse_ignore_lines function (Used by the scan thread - Accepts path)
-def parse_ignore_lines(lines):
-    """
-    Parses lines STRICTLY into file/folder patterns. Used by the background scan process.
-    Only lines starting with 'file:' or 'folder:' are considered valid.    """
-    ignore_files = []
-    ignore_folders = []
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue # Skip comments and blank lines
-
-        if line.lower().startswith("file:"):
-            pattern = line[len("file:"):].strip()
-            if pattern:
-                ignore_files.append(pattern)
-        elif line.lower().startswith("folder:"):
-            pattern = line[len("folder:"):].strip()
-            if pattern:
-                ignore_folders.append(pattern)
-        # Lines without a valid prefix are strictly ignored here
-    return ignore_files, ignore_folders
-
-# Helper to load raw lines (accepts path)
-def load_raw_ignore_lines(ignore_file_path):
-    """Loads raw lines from the specified ignore file."""
-    lines = []
-    if ignore_file_path and os.path.exists(ignore_file_path):
-        try:
-            with open(ignore_file_path, "r", encoding="utf-8") as f:
-                lines = f.readlines() # Read including newlines initially
-        except Exception as e:
-            print(f"Error loading ignore file raw lines from '{ignore_file_path}': {e}")
-            # Depending on requirements, might want to raise here too
-    return lines
+        raise
 
 # Helper to create an empty file
 def create_empty_file(filepath):
@@ -174,7 +131,9 @@ def create_empty_file(filepath):
         if parent_dir and not os.path.exists(parent_dir):
             os.makedirs(parent_dir)
         with open(filepath, 'w', encoding='utf-8') as f:
-            pass # Just create the file
+            # Add default comments to a new rules file
+            f.write("# Files to ignore/include (full paths)\n\n")
+            f.write("# Folders to ignore/include (full paths)\n\n")
         print(f"Created empty file: {filepath}")
         return True
     except Exception as e:
@@ -183,209 +142,225 @@ def create_empty_file(filepath):
         return False
 
 
-# --- Scan Logic (Revised for Filter Modes) ---
+# --- Scan Logic (Revised for Full Paths and Whitelist Folder Content) ---
 
-def should_process_item(item_name, item_path, is_file, rules_files, rules_folders, filter_mode, is_whitelisted_folder_content=False):
+def should_process_item(item_path, is_file, rules_files, rules_folders, filter_mode, whitelisted_parent_folders):
     """
-    Determines if a file or folder should be processed based on the filter mode and rules.
+    Determines if a file or folder should be processed based on full path rules.
     Args:
-        item_name (str): The basename of the file or folder.
-        item_path (str): The full path of the item (currently unused, but available).
+        item_path (str): The full, normalized path of the item.
         is_file (bool): True if the item is a file, False if a folder.
-        rules_files (list): List of file patterns from the rules file.
-        rules_folders (list): List of folder patterns from the rules file.
+        rules_files (list): List of full file paths from the rules file (normalized).
+        rules_folders (list): List of full folder paths from the rules file (normalized).
         filter_mode (str): Either FILTER_BLACKLIST or FILTER_WHITELIST.
-        is_whitelisted_folder_content (bool): True if this item is inside a folder
-                                             that was explicitly whitelisted.
+        whitelisted_parent_folders (list): List of full folder paths that are whitelisted (normalized),
+                                          and whose content should thus be processed in whitelist mode.
     Returns:
         bool: True if the item should be processed, False otherwise.
     """
-    rules = rules_files if is_file else rules_folders
+    normalized_item_path = os.path.normpath(item_path)
 
     if filter_mode == FILTER_BLACKLIST:
-        # Blacklist: Ignore if it matches any rule
-        for pattern in rules:
-            # Using simple substring matching as per original logic
-            if pattern in item_name:
-                return False # Ignore if matched
-        return True # Include if not matched
+        # Blacklist: Ignore if item_path matches a rule or is within a blacklisted folder.
+        if is_file:
+            if normalized_item_path in rules_files: # rules_files are already normalized
+                return False # Exact file match
+            # Check if file is in a blacklisted folder
+            for folder_rule in rules_folders: # rules_folders are already normalized
+                # Check if item is inside or IS the folder path itself (though folder_rule usually for dirs)
+                if normalized_item_path.startswith(folder_rule + os.sep) or normalized_item_path == folder_rule:
+                    return False
+        else: # Is folder
+            if normalized_item_path in rules_folders: # rules_folders are already normalized
+                return False # Exact folder match
+            # If a parent folder of this folder is blacklisted, this folder is also ignored for recursion.
+            for folder_rule in rules_folders: # rules_folders are already normalized
+                 if normalized_item_path.startswith(folder_rule + os.sep):
+                    return False
+        return True # Include if not matched by any blacklist rule
 
     elif filter_mode == FILTER_WHITELIST:
         # Whitelist:
-        if is_whitelisted_folder_content:
-            # If parent folder was whitelisted, include everything inside it (files and folders)
-            # UNLESS a more specific rule for this item type excludes it (not current logic, but for future thought)
-            # For now, if parent is whitelisted, item is considered for inclusion.
-            # Specific check for file or folder rule matching is still needed.
-            pass # Fall through to pattern matching for this item
+        # 1. If it's content of an explicitly whitelisted folder path, include it.
+        for whitelisted_folder_path in whitelisted_parent_folders: # These are normalized
+            if normalized_item_path.startswith(whitelisted_folder_path + os.sep) or normalized_item_path == whitelisted_folder_path:
+                return True
 
-        # Include only if it *exactly* matches a rule (using substring for now as per original)
-        for pattern in rules:
-            if pattern in item_name:
-                return True # Include if matched
-        # If this is content of a whitelisted folder and it's a file, it should be included
-        # even if it doesn't match a specific 'file:' rule.
-        # Folders inside whitelisted folders are also included to continue recursion.
-        if is_whitelisted_folder_content:
-            return True
+        # 2. If it's a file, it must be in rules_files (which are normalized).
+        if is_file:
+            return normalized_item_path in rules_files
+        # 3. If it's a folder, it must be in rules_folders (which are normalized).
+        #    This allows recursion into whitelisted folders.
+        else: # Is folder
+            return normalized_item_path in rules_folders
 
-        return False # Exclude if not matched by any whitelist rule (and not in whitelisted folder)
-
-    else:
-        # Should not happen, default to blacklist behavior
-        print(f"Warning: Unknown filter mode '{filter_mode}'. Defaulting to blacklist.")
-        for pattern in rules:
-            if pattern in item_name:
-                return False
-        return True
+    # Default behavior (should not happen with proper filter_mode values)
+    print(f"Warning: Unknown filter mode '{filter_mode}'. Defaulting to include item '{normalized_item_path}'.")
+    return True
 
 
-def process_directory(directory, output_file, rules_files, rules_folders, filter_mode, level=0, status_callback=None, is_whitelisted_content=False):
+def process_directory(directory, output_file, rules_files, rules_folders, filter_mode, level=0, status_callback=None, whitelisted_ancestor_folders=None):
     """
-    Processes a directory recursively based on the selected filter mode.
-    Returns True if this directory or any of its children contained whitelisted content, False otherwise.
-    This return value is used in WHITELIST mode to determine if a parent directory header should be printed.
+    Processes a directory recursively based on full path rules and filter mode.
+    Args:
+        directory (str): Full path of the directory to process.
+        output_file: File object to write to.
+        rules_files (list): List of whitelisted/blacklisted file full paths (normalized).
+        rules_folders (list): List of whitelisted/blacklisted folder full paths (normalized).
+        filter_mode (str): 'whitelist' or 'blacklist'.
+        level (int): Current recursion depth.
+        status_callback (function): Optional callback for status updates.
+        whitelisted_ancestor_folders (list): Full paths of ancestor folders that were explicitly whitelisted (normalized).
+                                         Used in whitelist mode to process all content within such folders.
+    Returns:
+        bool: True if any content was written for this directory or its children (relevant for whitelist parent calls).
     """
     heading_level = level + 2
     heading_prefix = "#" * heading_level
-    found_whitelisted_content_in_this_branch = False
+    content_written_for_this_branch = False
+    normalized_directory = os.path.normpath(directory)
+
+    # Ensure whitelisted_ancestor_folders is a list for the current scope
+    current_whitelisted_ancestors = list(whitelisted_ancestor_folders) if whitelisted_ancestor_folders else []
+    # If the current directory being processed is itself an explicitly whitelisted folder,
+    # add it to the list of ancestors for its children's processing.
+    if filter_mode == FILTER_WHITELIST and normalized_directory in rules_folders:
+        if normalized_directory not in current_whitelisted_ancestors:
+            current_whitelisted_ancestors.append(normalized_directory)
+
 
     if status_callback:
-        status_callback(f"Processing: {directory}")
+        status_callback(f"Processing: {normalized_directory}")
 
     try:
-        items = os.listdir(directory)
+        items = os.listdir(normalized_directory)
     except Exception as e:
-        if filter_mode == FILTER_BLACKLIST or is_whitelisted_content:
+        # Determine if an error message should be written
+        # For blacklist, if we attempt to read it, it's not blacklisted at this level
+        # For whitelist, if it's an explicitly whitelisted dir or content of one
+        is_dir_in_whitelisted_scope = False
+        if filter_mode == FILTER_WHITELIST:
+            if normalized_directory in rules_folders: # Explicitly whitelisted itself
+                is_dir_in_whitelisted_scope = True
+            else: # Check if it's content of an ancestor
+                for wf_ancestor in (whitelisted_ancestor_folders if whitelisted_ancestor_folders else []):
+                    if normalized_directory.startswith(wf_ancestor + os.sep):
+                        is_dir_in_whitelisted_scope = True
+                        break
+        
+        if filter_mode == FILTER_BLACKLIST or is_dir_in_whitelisted_scope:
             output_file.write(f"{heading_prefix} Error Reading Directory\n\n")
-            output_file.write(f"**Path:** `{directory}`\n\n")
+            output_file.write(f"**Path:** `{normalized_directory}`\n\n")
             output_file.write(f"**Error:** `{e}`\n\n")
+            content_written_for_this_branch = True # Error itself is content
         if status_callback:
-            status_callback(f"Error reading: {directory}")
-        return False # No content found or processed
+            status_callback(f"Error reading: {normalized_directory} - {e}")
+        return content_written_for_this_branch
 
-    # --- Item Categorization ---
-    # files_to_consider and dirs_to_recurse will hold items that *might* be processed
-    # based on initial rule checks or mode specifics.
-    files_to_consider = []
-    dirs_to_recurse = []
-    
-    # In WHITELIST mode, we need to track if a subdirectory itself matches a folder: rule
-    # to correctly pass down the is_whitelisted_content flag.
-    explicitly_whitelisted_subdirs = [] 
+    files_to_output = []
+    dirs_to_recurse_info = [] # Stores {'name': str, 'path': str, 'ancestors': list}
 
-    for item in items:
-        item_path = os.path.join(directory, item)
-        is_file = os.path.isfile(item_path)
+    for item_name in items:
+        item_path = os.path.join(normalized_directory, item_name)
+        normalized_item_path = os.path.normpath(item_path)
+        is_file = os.path.isfile(normalized_item_path)
 
-        if filter_mode == FILTER_BLACKLIST:
-            # Blacklist mode: if item passes should_process_item, add it.
-            if should_process_item(item, item_path, is_file, rules_files, rules_folders, filter_mode, is_whitelisted_content):
-                if is_file:
-                    files_to_consider.append(item)
-                else:
-                    dirs_to_recurse.append(item)
-        
-        elif filter_mode == FILTER_WHITELIST:
-            # Whitelist mode:
-            # 1. All directories are initially added for recursion to find whitelisted files within them.
-            # 2. Files are added if they match a file: rule OR if they are within an already whitelisted folder stream.
-            # 3. We also track if a directory *itself* matches a folder: rule.
+        # Pass the current_whitelisted_ancestors for the should_process_item check
+        if should_process_item(normalized_item_path, is_file, rules_files, rules_folders, filter_mode, current_whitelisted_ancestors):
             if is_file:
-                # A file is processed if it's in whitelisted content OR it matches a 'file:' rule directly.
-                if should_process_item(item, item_path, True, rules_files, rules_folders, filter_mode, is_whitelisted_content):
-                    files_to_consider.append(item)
-            else: # Is directory
-                # ALWAYS add subdirectories to the recursion list in WHITELIST mode to check for nested whitelisted files.
-                dirs_to_recurse.append(item)
-                # Check if this directory itself matches a 'folder:' rule to set 'is_whitelisted_content' for the next level.
-                # This uses should_process_item, but specifically for a directory match, not for general content.
-                if not is_whitelisted_content: # Only check if not already in whitelisted stream
-                    for pattern in rules_folders:
-                        if pattern in item: # Current directory name matches a folder rule
-                            explicitly_whitelisted_subdirs.append(item)
-                            break
-    
-    files_to_consider.sort()
-    dirs_to_recurse.sort()
+                files_to_output.append(item_name)
+            else: # Is folder, and it passed should_process_item
+                # For recursion, the ancestors list for the next level will be current_whitelisted_ancestors
+                # If this folder (normalized_item_path) is also explicitly whitelisted, it's already covered
+                # as current_whitelisted_ancestors would include it if normalized_directory was its parent and whitelisted.
+                # Or, if normalized_directory is the whitelisted folder, then current_whitelisted_ancestors contains it.
+                # The critical part is that `current_whitelisted_ancestors` is correctly passed down.
+                dirs_to_recurse_info.append({'name': item_name, 'path': normalized_item_path, 'ancestors': list(current_whitelisted_ancestors)})
+        elif filter_mode == FILTER_WHITELIST and not is_file:
+            # Even if a folder itself isn't explicitly whitelisted (e.g. not in rules_folders),
+            # we must recurse into it if it *might* contain whitelisted items deeper down,
+            # *unless* it's part of an already blacklisted path (which should_process_item would handle for blacklist).
+            # For whitelist, we recurse into any directory not explicitly ruled out if not itself whitelisted,
+            # because a file deeper inside could be whitelisted.
+            # The `current_whitelisted_ancestors` remains the same for this recursion, as this folder itself isn't adding to the whitelisted scope.
+            # We only skip recursion if this folder (normalized_item_path) is explicitly blacklisted by some other rule (not typical for whitelist mode).
+            # A practical check: if any rule_file starts with this folder's path, or any rule_folder is this folder or deeper.
+            can_contain_whitelisted = False
+            for rf_path in rules_files:
+                if rf_path.startswith(normalized_item_path + os.sep):
+                    can_contain_whitelisted = True
+                    break
+            if not can_contain_whitelisted:
+                for rfo_path in rules_folders:
+                    if rfo_path == normalized_item_path or rfo_path.startswith(normalized_item_path + os.sep) :
+                        can_contain_whitelisted = True
+                        break
+            if can_contain_whitelisted:
+                 dirs_to_recurse_info.append({'name': item_name, 'path': normalized_item_path, 'ancestors': list(current_whitelisted_ancestors)})
 
-    # --- Recursive Processing for Subdirectories ---
-    # Stores subdirectory names that, after recursion, were found to contain whitelisted content
-    # or were themselves whitelisted.
-    subdirs_with_content = [] 
 
-    for dir_name in dirs_to_recurse:
-        sub_dir_path = os.path.join(directory, dir_name)
+    files_to_output.sort()
+    dirs_to_recurse_info.sort(key=lambda x: x['name'])
+
+    processed_subdirs_with_content = []
+    for dir_info in dirs_to_recurse_info:
+        # The 'ancestors' for the next call is dir_info['ancestors']
+        # which is essentially current_whitelisted_ancestors from this level.
+        # If dir_info['path'] (the subdir itself) was whitelisted, it should be added to its own recursive call's ancestors.
         
-        # Determine if the next level of recursion is considered whitelisted content.
-        # It is if:
-        #   a) The current directory (self) is part of a whitelisted content stream (is_whitelisted_content is True).
-        #   OR
-        #   b) This specific sub_dir_path (dir_name) matched a 'folder:' rule.
-        next_level_is_whitelisted = is_whitelisted_content or (dir_name in explicitly_whitelisted_subdirs)
+        # Prepare whitelisted ancestors for the *next* recursive call specifically for this subdirectory
+        next_level_ancestors = list(dir_info['ancestors']) # Start with what was passed down
+        if filter_mode == FILTER_WHITELIST and dir_info['path'] in rules_folders: # If the subdir itself is whitelisted
+            if dir_info['path'] not in next_level_ancestors: # Add it if not already there
+                next_level_ancestors.append(dir_info['path'])
 
-        if process_directory(sub_dir_path, output_file, rules_files, rules_folders, filter_mode, level + 1, status_callback, next_level_is_whitelisted):
-            found_whitelisted_content_in_this_branch = True
-            subdirs_with_content.append(dir_name) # This subdir (or its children) has content
+        if process_directory(dir_info['path'], output_file, rules_files, rules_folders, filter_mode, level + 1, status_callback, next_level_ancestors):
+            content_written_for_this_branch = True
+            processed_subdirs_with_content.append(dir_info['name'])
 
-    # --- Output Logic ---
-    # Determine if this directory's header should be written.
 
-    # Is the current directory itself explicitly whitelisted by a folder rule?
-    current_dir_is_explicitly_whitelisted = False
-    if filter_mode == FILTER_WHITELIST and not is_whitelisted_content: # if not is_whitelisted_content, it means this dir's parent was not a whitelisted folder
-        dir_basename = os.path.basename(directory)
-        for pattern in rules_folders:
-            if pattern in dir_basename:
-                current_dir_is_explicitly_whitelisted = True
-                break
+    should_write_header = False
+    # Is the current directory (normalized_directory) itself explicitly whitelisted or content of one?
+    is_current_dir_in_whitelisted_scope = False
+    if filter_mode == FILTER_WHITELIST:
+        if normalized_directory in rules_folders: # Explicitly whitelisted itself
+            is_current_dir_in_whitelisted_scope = True
+        else: # Check if it's content of an ancestor
+            for wf_ancestor in (whitelisted_ancestor_folders if whitelisted_ancestor_folders else []): # Use original ancestors passed to this call
+                if normalized_directory.startswith(wf_ancestor + os.sep):
+                    is_current_dir_in_whitelisted_scope = True
+                    break
     
-    # In WHITELIST mode, found_whitelisted_content_in_this_branch is True if any whitelisted file was found directly
-    # in this directory, or if any subdirectory processed contained whitelisted content.
-    # If files_to_consider is not empty, it means whitelisted files were found directly in this directory.
-    if files_to_consider: # This implies whitelisted files are directly in this folder
-        found_whitelisted_content_in_this_branch = True
-
-
-    should_write_dir_header = False
     if filter_mode == FILTER_BLACKLIST:
-        # In Blacklist mode, write header if there are any items (files or dirs) to process,
-        # or if the directory is empty but not ignored (empty dir listing).
-        # The check for ignored directories happens before process_directory is called for them.
-        should_write_dir_header = bool(files_to_consider or dirs_to_recurse or not items) # items refers to os.listdir
+        if files_to_output or processed_subdirs_with_content or (not items and level == 0 and not files_to_output and not processed_subdirs_with_content): # List empty root dir
+            should_write_header = True
     elif filter_mode == FILTER_WHITELIST:
-        # In Whitelist mode, write header if:
-        # 1. The directory itself is explicitly whitelisted by a 'folder:' rule.
-        # OR
-        # 2. It contains (directly or via subdirectories) any files whitelisted by 'file:' rules.
-        #    (tracked by found_whitelisted_content_in_this_branch)
-        # OR (edge case for whitelisted folder content)
-        # 3. If `is_whitelisted_content` is true, and this directory has *any* content to show (files_to_consider or subdirs_with_content)
-        if current_dir_is_explicitly_whitelisted:
-            should_write_dir_header = True
-        elif found_whitelisted_content_in_this_branch: # This covers files in current dir or whitelisted content in subdirs
-             should_write_dir_header = True
-        elif is_whitelisted_content and (files_to_consider or subdirs_with_content): # Content of an already whitelisted folder
-             should_write_dir_header = True
+        if is_current_dir_in_whitelisted_scope and (files_to_output or processed_subdirs_with_content or not items): # If whitelisted and has content or is empty
+            should_write_header = True
+        elif files_to_output: # Files in this dir are whitelisted (even if dir itself is not)
+             should_write_header = True
+        elif processed_subdirs_with_content: # Subdirs had whitelisted content
+             should_write_header = True
 
 
-    if not should_write_dir_header:
-        return found_whitelisted_content_in_this_branch # Still return if any whitelisted items were found for parent's sake
+    if not should_write_header:
+        return content_written_for_this_branch
 
-    # --- Write Directory Header and Files ---
-    output_file.write(f"{heading_prefix} Directory: {os.path.basename(directory)}\n\n")
-    output_file.write(f"**Path:** `{directory}`\n\n")
+    output_file.write(f"{heading_prefix} Directory: {os.path.basename(normalized_directory)}\n\n")
+    output_file.write(f"**Path:** `{normalized_directory}`\n\n")
+    content_written_for_this_branch = True
 
-    if files_to_consider:
+    if files_to_output:
         file_heading_level = heading_level + 1
         file_heading_prefix = "#" * file_heading_level
         output_file.write(f"{file_heading_prefix} Files\n\n")
-        for file_name in files_to_consider:
-            file_path = os.path.join(directory, file_name)
+        for file_name in files_to_output:
+            file_path = os.path.join(normalized_directory, file_name)
+            normalized_file_path = os.path.normpath(file_path)
             output_file.write(f"**File:** `{file_name}`\n")
             lang_hint = get_language_hint(file_name)
             try:
-                with open(file_path, "r", encoding="utf-8", errors='ignore') as f_content:
+                with open(normalized_file_path, "r", encoding="utf-8", errors='ignore') as f_content:
                     content = f_content.read()
                 output_file.write(f"```{lang_hint}\n")
                 output_file.write(content)
@@ -393,13 +368,12 @@ def process_directory(directory, output_file, rules_files, rules_folders, filter
             except Exception as e:
                 output_file.write(f"**Error reading file:** `{e}`\n\n")
                 if status_callback:
-                    status_callback(f"Error reading file: {file_path}")
-    
-    # The recursive calls to process_directory for subdirectories that *should* be outputted
-    # have already happened and written their content. We don't re-iterate here for output,
-    # only for logic to decide if THIS directory's header was needed.
+                    status_callback(f"Error reading file: {normalized_file_path} - {e}")
+    elif not items and not processed_subdirs_with_content : # No files and no subdirs with content were listed
+        if filter_mode == FILTER_BLACKLIST or (filter_mode == FILTER_WHITELIST and is_current_dir_in_whitelisted_scope):
+            output_file.write(f"*This folder is empty or all its contents were excluded/not included by rules.*\n\n")
 
-    return found_whitelisted_content_in_this_branch or current_dir_is_explicitly_whitelisted or (is_whitelisted_content and (files_to_consider or subdirs_with_content))
+    return content_written_for_this_branch
 
 
 # --- GUI Application Class ---
@@ -408,47 +382,45 @@ class CodeScannerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Codebase Scanner")
-        # self.root.geometry("700x750") # Increased height slightly for filter mode toggle
 
         # --- Variables ---
         self.scan_directory = tk.StringVar()
         self.save_filepath = tk.StringVar()
-        self.current_ignore_file_path = tk.StringVar() # Holds path to active ignore file
+        self.current_rules_filepath = tk.StringVar() # Holds path to active rules file
         self.status_text = tk.StringVar()
         self.status_text.set("Initializing...")
-        self.filter_mode_var = tk.StringVar() # Variable for filter mode (blacklist/whitelist)
+        self.filter_mode_var = tk.StringVar(value=FILTER_BLACKLIST)
 
-        # --- Revised Internal Ignore State ---
-        self.ignore_files = [] # List of file patterns (strings) in UI
-        self.ignore_folders = [] # List of folder patterns (strings) in UI
-        self.ignore_dirty = False # Flag to track unsaved changes in UI
+        self.rules_files = [] # Store full paths for UI display and saving (normalized)
+        self.rules_folders = [] # Store full paths for UI display and saving (normalized)
+        self.rules_dirty = False # Flag to track unsaved changes in UI rules list
 
-        # --- Load Initial Settings ---
-        settings = load_settings()
-        self.scan_directory.set(settings.get('scan_directory', ''))
-        initial_save_dir = settings.get('save_directory', '')
-        self.current_ignore_file_path.set(settings.get('ignore_file_path', '')) # Load ignore file path
-        self.filter_mode_var.set(settings.get('filter_mode', FILTER_BLACKLIST)) # Load filter mode
+        # --- Profile Management State ---
+        self.profiles, self.last_active_profile_name = load_profiles()
+        self.active_profile_name = None # Name of the currently loaded profile
 
-        # Set default save path using the constant filename
-        if initial_save_dir:
-            # Use loaded save directory but always the default filename
-            self.save_filepath.set(os.path.join(initial_save_dir, DEFAULT_OUTPUT_FILENAME))
-        elif self.scan_directory.get():
-             # Suggest save in parent of scan dir if save dir wasn't loaded
-             self._suggest_save_filename()
-        else:
-             # Fallback to just the filename if no dirs are set
-             self.save_filepath.set(DEFAULT_OUTPUT_FILENAME)
+        # --- Load Initial PROFILE DATA (StringVars only, no GUI update yet for rules list) ---
+        self._configure_fields_from_initial_profile()
 
 
         # --- GUI Layout ---
+        # Menu Bar for Profiles
+        menubar = tk.Menu(root)
+        profile_menu = tk.Menu(menubar, tearoff=0)
+        profile_menu.add_command(label="Save Profile...", command=self._save_profile_dialog)
+        profile_menu.add_command(label="Load Profile...", command=self._load_profile_dialog) 
+        profile_menu.add_command(label="Delete Profile...", command=self._delete_profile_dialog) 
+        profile_menu.add_separator()
+        profile_menu.add_command(label="Manage Profiles...", command=self._manage_profiles_dialog)
+        menubar.add_cascade(label="Profiles", menu=profile_menu)
+        root.config(menu=menubar)
+
+
         main_frame = ttk.Frame(root, padding="10")
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(0, weight=1) # Allow main frame to expand
+        root.rowconfigure(0, weight=1)
 
-        # Row indices will be updated as we add the filter mode toggle
         current_row = 0
 
         # Scan Directory Row
@@ -467,85 +439,80 @@ class CodeScannerApp:
         save_button.grid(row=current_row, column=2, sticky=tk.E, padx=5, pady=2)
         current_row += 1
 
-        # Ignore File Path Row
-        ttk.Label(main_frame, text="Rules File:").grid(row=current_row, column=0, sticky=tk.W, pady=2) # Renamed label slightly
-        ignore_file_entry = ttk.Entry(main_frame, textvariable=self.current_ignore_file_path, width=60, state='readonly') # Read-only display
-        ignore_file_entry.grid(row=current_row, column=1, sticky=(tk.W, tk.E), padx=5, pady=2)
-        ignore_file_button = ttk.Button(main_frame, text="Browse...", command=self._browse_ignore_file)
-        ignore_file_button.grid(row=current_row, column=2, sticky=tk.E, padx=5, pady=2)
-        ToolTip(ignore_file_button, "Select or create the rules file (.scanIgnore, etc.)")
+        # Rules File Path Row
+        ttk.Label(main_frame, text="Rules File:").grid(row=current_row, column=0, sticky=tk.W, pady=2)
+        rules_file_entry = ttk.Entry(main_frame, textvariable=self.current_rules_filepath, width=60, state='readonly')
+        rules_file_entry.grid(row=current_row, column=1, sticky=(tk.W, tk.E), padx=5, pady=2)
+        rules_file_button = ttk.Button(main_frame, text="Browse...", command=self._browse_rules_file)
+        rules_file_button.grid(row=current_row, column=2, sticky=tk.E, padx=5, pady=2)
+        ToolTip(rules_file_button, "Select or create the path-based rules file (.scanIgnore, etc.)")
         current_row += 1
 
-        # --- NEW: Filter Mode Toggle Row ---
+        # Filter Mode Toggle Row
         filter_mode_frame = ttk.Frame(main_frame)
         filter_mode_frame.grid(row=current_row, column=0, columnspan=3, sticky=tk.W, pady=(5, 2))
         self.filter_mode_check = ttk.Checkbutton(
             filter_mode_frame,
-            text="Whitelist Mode (Include Only Listed Items)",
+            text="Whitelist Mode (Include Only Listed Paths)",
             variable=self.filter_mode_var,
             onvalue=FILTER_WHITELIST,
             offvalue=FILTER_BLACKLIST,
-            command=self._on_filter_mode_change # Add command to update settings potentially
+            command=self._on_filter_mode_change
         )
         self.filter_mode_check.pack(side=tk.LEFT)
-        ToolTip(self.filter_mode_check, "Check: Only include items matching rules.\nUncheck (Default): Include all items EXCEPT those matching rules.")
+        ToolTip(self.filter_mode_check, "Check: Only include items matching full path rules.\nUncheck (Default): Include all items EXCEPT those matching full path rules.")
         current_row += 1
 
+        # Rules List Section
+        self.rules_frame = ttk.LabelFrame(main_frame, text="Rules List", padding="5") # Title updated dynamically
+        self.rules_frame.grid(row=current_row, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=10)
+        self.rules_frame.columnconfigure(0, weight=1)
+        self.rules_frame.rowconfigure(0, weight=1)
+        current_row += 1
 
-        # --- Ignore List Section (Label updated dynamically) ---
-        self.ignore_frame = ttk.LabelFrame(main_frame, text="Rules List", padding="5") # Generic name
-        self.ignore_frame.grid(row=current_row, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=10)
-        self.ignore_frame.columnconfigure(0, weight=1)
-        self.ignore_frame.rowconfigure(0, weight=1) # Allow canvas/list to expand
-        current_row += 1 # Increment row index for next element
-
-        # Canvas, Frame, Scrollbar for ignore list (unchanged structure)
-        self.ignore_canvas = tk.Canvas(self.ignore_frame, borderwidth=0)
-        self.ignore_list_frame = ttk.Frame(self.ignore_canvas)
-        self.ignore_scrollbar = ttk.Scrollbar(self.ignore_frame, orient="vertical", command=self.ignore_canvas.yview)
-        self.ignore_canvas.configure(yscrollcommand=self.ignore_scrollbar.set)
-        self.ignore_canvas.grid(row=0, column=0, sticky="nsew")
-        self.ignore_scrollbar.grid(row=0, column=1, sticky="ns")
-        self.canvas_window = self.ignore_canvas.create_window((0, 0), window=self.ignore_list_frame, anchor="nw")
-        self.ignore_list_frame.bind("<Configure>", self._on_frame_configure)
-        self.ignore_canvas.bind('<Configure>', self._on_canvas_configure)
-        self.ignore_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
-        self.ignore_canvas.bind_all("<Button-4>", self._on_mousewheel)
-        self.ignore_canvas.bind_all("<Button-5>", self._on_mousewheel)
+        self.rules_canvas = tk.Canvas(self.rules_frame, borderwidth=0)
+        self.rules_list_frame = ttk.Frame(self.rules_canvas) # DEFINED HERE
+        self.rules_scrollbar = ttk.Scrollbar(self.rules_frame, orient="vertical", command=self.rules_canvas.yview)
+        self.rules_canvas.configure(yscrollcommand=self.rules_scrollbar.set)
+        self.rules_canvas.grid(row=0, column=0, sticky="nsew")
+        self.rules_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.canvas_window = self.rules_canvas.create_window((0, 0), window=self.rules_list_frame, anchor="nw")
+        self.rules_list_frame.bind("<Configure>", self._on_frame_configure)
+        self.rules_canvas.bind('<Configure>', self._on_canvas_configure)
+        self.root.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
+        self.root.bind_all("<Button-4>", self._on_mousewheel, add="+")
+        self.root.bind_all("<Button-5>", self._on_mousewheel, add="+")
 
 
-        # Ignore Buttons Frame (Below the list)
-        ignore_buttons_frame = ttk.Frame(self.ignore_frame)
-        ignore_buttons_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        # Rules Buttons Frame
+        rules_buttons_frame = ttk.Frame(self.rules_frame)
+        rules_buttons_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
 
-        add_file_button = ttk.Button(ignore_buttons_frame, text="Add File Rule(s)", command=self._add_files_to_ignore)
+        add_file_button = ttk.Button(rules_buttons_frame, text="Add File Rule(s)", command=self._add_file_rules)
         add_file_button.pack(side=tk.LEFT, padx=5)
+        ToolTip(add_file_button, "Add one or more files to the rules list by their full path.")
 
-        add_folder_button = ttk.Button(ignore_buttons_frame, text="Add Folder Rule", command=self._add_folder_to_ignore)
+
+        add_folder_button = ttk.Button(rules_buttons_frame, text="Add Folder Rule", command=self._add_folder_rule)
         add_folder_button.pack(side=tk.LEFT, padx=5)
+        ToolTip(add_folder_button, "Add a folder to the rules list by its full path.")
 
-        # Default Buttons
-        load_defaults_button = ttk.Button(ignore_buttons_frame, text="Load Defaults", command=self._load_defaults)
-        load_defaults_button.pack(side=tk.LEFT, padx=5)
-        ToolTip(load_defaults_button, f"Merge rules from {DEFAULT_IGNORE_FILE}")
-
-        edit_defaults_button = ttk.Button(ignore_buttons_frame, text="Edit Defaults", command=self._edit_defaults_dialog)
+        edit_defaults_button = ttk.Button(rules_buttons_frame, text="Edit Default Name Patterns", command=self._edit_defaults_dialog)
         edit_defaults_button.pack(side=tk.LEFT, padx=5)
-        ToolTip(edit_defaults_button, f"Open editor for {DEFAULT_IGNORE_FILE}")
+        ToolTip(edit_defaults_button, f"Open editor for {DEFAULT_IGNORE_FILE} which uses name-based patterns (not full paths).")
 
-        # Save Button (Existing)
-        save_ignore_button = ttk.Button(ignore_buttons_frame, text="Save Rules List", command=self._save_ignore_changes)
-        save_ignore_button.pack(side=tk.LEFT, padx=5) # Explicit save button
-        ToolTip(save_ignore_button, "Save current rules to the selected rules file.")
+        save_rules_button = ttk.Button(rules_buttons_frame, text="Save Rules List", command=self._save_rules_list_changes)
+        save_rules_button.pack(side=tk.LEFT, padx=5)
+        ToolTip(save_rules_button, "Save current path-based rules to the selected rules file.")
 
-
-        # --- Initial Load/Prompt for Ignore File ---
-        self._initialize_ignore_file() # This also updates the frame title
+        # --- Initial Load and Display of Rules from the (profile-set) rules file path ---
+        # This happens AFTER GUI for rules list is built.
+        self._initialize_rules_file_and_display()
 
 
         # Run Scan Button
         run_button = ttk.Button(main_frame, text="Run Scan", command=self._run_scan, style="Accent.TButton")
-        run_button.grid(row=current_row, column=0, columnspan=3, pady=10) # Use updated row index
+        run_button.grid(row=current_row, column=0, columnspan=3, pady=10)
         current_row += 1
         style = ttk.Style()
         try:
@@ -555,901 +522,1063 @@ class CodeScannerApp:
 
         # Status Bar
         status_bar = ttk.Label(root, textvariable=self.status_text, relief=tk.SUNKEN, anchor=tk.W, padding="2 5")
-        status_bar.grid(row=1, column=0, sticky=(tk.W, tk.E)) # Grid row for status bar is outside main_frame
+        status_bar.grid(row=1, column=0, sticky=(tk.W, tk.E))
 
-        # Configure resizing behavior
-        main_frame.columnconfigure(1, weight=1) # Allow entry fields to expand horizontally
-        main_frame.rowconfigure(current_row - 2, weight=1) # Allow ignore list section (row just before Run button) to expand vertically
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(current_row - 2, weight=1) # Rules list section expands
 
-        self.status_text.set("Ready") # Set status after init
+        # Set initial status message after GUI is built and initial profile data might be loaded
+        if self.active_profile_name:
+            self.status_text.set(f"Profile '{self.active_profile_name}' loaded. Ready.")
+        else:
+            self.status_text.set("Ready. Configure manually or load a profile.")
+        self._update_window_title()
+
+    def _configure_fields_from_initial_profile(self):
+        """Sets initial StringVars (scan_directory, save_filepath, current_rules_filepath, filter_mode_var)
+           and active_profile_name based on the last active profile or defaults.
+           Does NOT interact with the rules list GUI directly as it may not exist yet.
+        """
+        profile_to_load_name = self.last_active_profile_name
+        configured_successfully = False
+        if profile_to_load_name and profile_to_load_name in self.profiles:
+            profile_data = self.profiles.get(profile_to_load_name)
+            if profile_data:
+                self.scan_directory.set(profile_data.get("scan_directory", ""))
+                self.save_filepath.set(profile_data.get("save_filepath", os.path.join(os.path.expanduser("~"), DEFAULT_OUTPUT_FILENAME)))
+                self.current_rules_filepath.set(profile_data.get("rules_filepath", ""))
+                self.filter_mode_var.set(profile_data.get("filter_mode", FILTER_BLACKLIST))
+                self.active_profile_name = profile_to_load_name # Set active profile name
+                configured_successfully = True
+                # Status update and window title will be handled at the end of __init__
+
+        if not configured_successfully:
+            self.scan_directory.set("")
+            self.save_filepath.set(os.path.join(os.path.expanduser("~"), DEFAULT_OUTPUT_FILENAME))
+            self.current_rules_filepath.set("") 
+            self.filter_mode_var.set(FILTER_BLACKLIST)
+            self.active_profile_name = None
 
 
-    # --- Canvas/Scrollbar Helpers (Unchanged) ---
+    # --- Canvas/Scrollbar Helpers ---
     def _on_frame_configure(self, event=None):
-        self.ignore_canvas.configure(scrollregion=self.ignore_canvas.bbox("all"))
+        self.rules_canvas.configure(scrollregion=self.rules_canvas.bbox("all"))
+
     def _on_canvas_configure(self, event):
-        self.ignore_canvas.itemconfig(self.canvas_window, width=event.width)
+        self.rules_canvas.itemconfig(self.canvas_window, width=event.width)
+
     def _on_mousewheel(self, event):
-        # Determine the canvas to scroll based on where the mouse is
         canvas_to_scroll = None
-        widget_under_mouse = event.widget.winfo_containing(event.x_root, event.y_root)
-        if widget_under_mouse:
-            # Check if mouse is over the main ignore list canvas or its children
-            parent_widget = widget_under_mouse
-            while parent_widget is not None:
-                 if parent_widget == self.ignore_canvas:
-                     canvas_to_scroll = self.ignore_canvas
-                     break
-                 # Add checks here if other scrollable areas are added later
-                 parent_widget = parent_widget.master # Check parent widget
+        x_root, y_root = event.x_root, event.y_root
+        widget_under_mouse = self.root.winfo_containing(x_root, y_root)
 
-        if canvas_to_scroll: # Only scroll if we identified the correct canvas
-             if event.num == 5 or event.delta < 0: canvas_to_scroll.yview_scroll(1, "units")
-             elif event.num == 4 or event.delta > 0: canvas_to_scroll.yview_scroll(-1, "units")
+        current_widget = widget_under_mouse
+        while current_widget is not None:
+            if current_widget == self.rules_canvas: # Main rules canvas
+                canvas_to_scroll = self.rules_canvas
+                break
+            # Check if inside EditDefaultsDialog's canvas
+            if isinstance(current_widget, Toplevel): 
+                if hasattr(current_widget, 'dialog_rules_canvas') and current_widget.dialog_rules_canvas.winfo_ismapped():
+                    dialog_canvas = current_widget.dialog_rules_canvas
+                    cx, cy = dialog_canvas.winfo_rootx(), dialog_canvas.winfo_rooty()
+                    cw, ch = dialog_canvas.winfo_width(), dialog_canvas.winfo_height()
+                    if cx <= x_root < cx + cw and cy <= y_root < cy + ch:
+                        canvas_to_scroll = dialog_canvas
+                        break
+            if current_widget == self.root: break
+            current_widget = current_widget.master
 
-    # --- Status Update (Unchanged) ---
+        if canvas_to_scroll:
+            if event.num == 5 or event.delta < 0: canvas_to_scroll.yview_scroll(1, "units")
+            elif event.num == 4 or event.delta > 0: canvas_to_scroll.yview_scroll(-1, "units")
+
+
+    # --- Status Update ---
     def _update_status(self, message, clear_after_ms=None):
         self.status_text.set(message)
         self.root.update_idletasks()
         if clear_after_ms:
             self.root.after(clear_after_ms, lambda: self.status_text.set("Ready") if self.status_text.get() == message else None)
 
-    # --- NEW: Filter Mode Change Handler ---
+    # --- Filter Mode Change Handler ---
     def _on_filter_mode_change(self):
-        """Called when the filter mode checkbutton is toggled."""
         mode = self.filter_mode_var.get()
-        # Persist the change immediately
-        self._save_current_settings()
         mode_text = "Whitelist" if mode == FILTER_WHITELIST else "Blacklist"
         self._update_status(f"Filter mode changed to {mode_text}.", clear_after_ms=4000)
-        self._update_ignore_frame_title() # Update title to reflect mode potentially
+        self._update_rules_frame_title()
+        self._rebuild_rules_list_gui() 
 
-    # --- Helper to Save All Current Settings ---
-    def _save_current_settings(self):
-        """Saves all configurable settings to the config file."""
-        scan_dir = self.scan_directory.get()
-        # Extract save directory from the full save path
-        save_path = self.save_filepath.get()
-        save_dir = os.path.dirname(save_path) if save_path else ''
-        ignore_path = self.current_ignore_file_path.get()
-        filter_mode = self.filter_mode_var.get()
-        save_settings(scan_dir, save_dir, ignore_path, filter_mode)
+    # --- Window Title Update ---
+    def _update_window_title(self):
+        title = "Codebase Scanner"
+        if self.active_profile_name:
+            title += f" - Profile: {self.active_profile_name}"
+        self.root.title(title)
+
+    # --- Profile Management Methods ---
+    def _save_profile_dialog(self):
+        profile_name = simpledialog.askstring("Save Profile", "Enter profile name:", parent=self.root)
+        if profile_name:
+            profile_name = "".join(c for c in profile_name if c.isalnum() or c in (' ', '_', '-')).strip()
+            if not profile_name:
+                messagebox.showwarning("Invalid Name", "Profile name cannot be empty or only special characters.", parent=self.root)
+                return
+
+            if profile_name in self.profiles:
+                if not messagebox.askyesno("Overwrite Profile", f"Profile '{profile_name}' already exists. Overwrite?", parent=self.root):
+                    self._update_status("Save profile cancelled.", clear_after_ms=3000)
+                    return
+
+            scan_dir = self.scan_directory.get()
+            save_fp = self.save_filepath.get()
+            rules_fp = self.current_rules_filepath.get()
+            filter_mode = self.filter_mode_var.get()
+
+            if not scan_dir or not os.path.isdir(scan_dir):
+                messagebox.showwarning("Incomplete Configuration", "Scan directory must be a valid directory.", parent=self.root); return
+            if not save_fp :
+                messagebox.showwarning("Incomplete Configuration", "Save output path must be set.", parent=self.root); return
+            if not rules_fp or not os.path.isfile(rules_fp) : 
+                messagebox.showwarning("Incomplete Configuration", "Rules file must be a valid existing file.", parent=self.root); return
 
 
-    # --- Browse Functions (Updated for Save Path Suggestion) ---
+            self.profiles[profile_name] = {
+                "scan_directory": os.path.normpath(scan_dir),
+                "save_filepath": os.path.normpath(save_fp),
+                "rules_filepath": os.path.normpath(rules_fp),
+                "filter_mode": filter_mode
+            }
+            self.last_active_profile_name = profile_name
+            self.active_profile_name = profile_name
+            save_profiles(self.profiles, self.last_active_profile_name)
+            self._update_status(f"Profile '{profile_name}' saved.", clear_after_ms=3000)
+            self._update_window_title()
+
+    def _apply_profile_settings(self, profile_name, persist_last_active=False):
+        """Applies settings from a profile to GUI. Does not save profile automatically unless persist_last_active is True."""
+        profile_data = self.profiles.get(profile_name)
+        if profile_data:
+            self.scan_directory.set(profile_data.get("scan_directory", ""))
+            self.save_filepath.set(profile_data.get("save_filepath", DEFAULT_OUTPUT_FILENAME))
+            new_rules_filepath = profile_data.get("rules_filepath", "")
+            self.filter_mode_var.set(profile_data.get("filter_mode", FILTER_BLACKLIST))
+
+            # Handle unsaved changes for the OLD rules file before switching
+            normalized_new_rules_path = os.path.normpath(new_rules_filepath) if new_rules_filepath else ""
+            current_rules_path_val = self.current_rules_filepath.get()
+            normalized_current_rules_path = os.path.normpath(current_rules_path_val) if current_rules_path_val else ""
+
+            if normalized_new_rules_path != normalized_current_rules_path and self.rules_dirty:
+                if messagebox.askyesno("Unsaved Rules", f"You have unsaved changes in the current rules list for\n'{os.path.basename(normalized_current_rules_path if normalized_current_rules_path else 'Untitled Rules')}'.\nDiscard changes to load rules from the new profile?", default=messagebox.NO, parent=self.root):
+                    self.rules_dirty = False 
+                else:
+                    self._update_status(f"Profile '{profile_name}' load cancelled to keep unsaved rule changes.")
+                    return False 
+
+            self.current_rules_filepath.set(new_rules_filepath)
+            self._initialize_rules_file_and_display() 
+
+            self.active_profile_name = profile_name 
+            if persist_last_active: 
+                self.last_active_profile_name = profile_name
+                save_profiles(self.profiles, self.last_active_profile_name)
+
+            self._update_window_title()
+            return True
+        else:
+            messagebox.showerror("Error", f"Profile '{profile_name}' not found.", parent=self.root)
+            self.active_profile_name = None 
+            self._update_window_title()
+            return False
+
+
+    def _load_profile_dialog(self):
+        self._manage_profiles_dialog(initial_action="load")
+
+
+    def _delete_profile_dialog(self):
+        self._manage_profiles_dialog(initial_action="delete")
+
+    def _manage_profiles_dialog(self, initial_action="load"):
+        if not self.profiles and initial_action != "save": 
+            messagebox.showinfo("No Profiles", "No profiles saved yet to manage.", parent=self.root)
+            return
+        dialog = ManageProfilesDialog(self.root, self.profiles, current_active_profile=self.active_profile_name, app_instance=self, initial_action=initial_action)
+
+
+    def _execute_load_profile(self, profile_name_to_load):
+        """Called by ManageProfilesDialog to actually load."""
+        if self._apply_profile_settings(profile_name_to_load, persist_last_active=True):
+            self._update_status(f"Profile '{profile_name_to_load}' loaded.", clear_after_ms=3000)
+
+
+    def _execute_delete_profile(self, profile_name_to_delete):
+        """Called by ManageProfilesDialog to actually delete."""
+        if profile_name_to_delete in self.profiles:
+            del self.profiles[profile_name_to_delete]
+            if self.last_active_profile_name == profile_name_to_delete:
+                self.last_active_profile_name = None
+            if self.active_profile_name == profile_name_to_delete:
+                self.active_profile_name = None
+                self.scan_directory.set("")
+                self.save_filepath.set(os.path.join(os.path.expanduser("~"), DEFAULT_OUTPUT_FILENAME))
+                self.current_rules_filepath.set("")
+                self._clear_and_display_rules_list(None)
+                self._update_status("Active profile was deleted. Please configure or load another.", clear_after_ms=5000)
+
+            save_profiles(self.profiles, self.last_active_profile_name)
+            self._update_window_title()
+            return True 
+        return False
+
+
+    # --- Browse Functions ---
     def _browse_scan_directory(self):
         initial_dir = self.scan_directory.get() or os.path.expanduser("~")
-        directory = filedialog.askdirectory(title="Select Directory to Scan", initialdir=initial_dir)
+        directory = filedialog.askdirectory(title="Select Directory to Scan", initialdir=initial_dir, parent=self.root)
         if directory:
-            self.scan_directory.set(directory)
-            # Don't auto-suggest save filename here, keep the user's chosen/default name
-            # self._suggest_save_filename() # Removed auto-suggestion on scan dir change
+            self.scan_directory.set(os.path.normpath(directory))
             self._update_status("Scan directory selected.")
-            self._save_current_settings() # Save settings on change
         else:
             self._update_status("Scan directory selection cancelled.")
 
     def _browse_save_file(self):
-        initial_dir = os.path.dirname(self.save_filepath.get()) or \
-                      settings.get('save_directory', '') or \
-                      os.path.expanduser("~") # Use saved dir as primary initial
-        initial_file = os.path.basename(self.save_filepath.get()) or DEFAULT_OUTPUT_FILENAME
+        current_save_path = self.save_filepath.get()
+        initial_dir_suggestion = os.path.dirname(current_save_path) if current_save_path and os.path.isdir(os.path.dirname(current_save_path)) else None
+        if not initial_dir_suggestion:
+            scan_dir = self.scan_directory.get()
+            if scan_dir and os.path.isdir(scan_dir):
+                initial_dir_suggestion = scan_dir 
+            else:
+                initial_dir_suggestion = os.path.expanduser("~")
+
+        initial_file_suggestion = os.path.basename(current_save_path) or DEFAULT_OUTPUT_FILENAME
 
         filepath = filedialog.asksaveasfilename(
             title="Save Scan Output As",
-            initialdir=initial_dir,
-            initialfile=initial_file,
-            defaultextension=".txt", # Changed default extension
-            filetypes=[("Text Files", "*.txt"), ("Markdown Files", "*.md"), ("All Files", "*.*")] # Default to TXT
+            initialdir=initial_dir_suggestion,
+            initialfile=initial_file_suggestion,
+            defaultextension=".txt",
+            filetypes=[("Text Files", "*.txt"), ("Markdown Files", "*.md"), ("All Files", "*.*")],
+            parent=self.root
         )
         if filepath:
-            self.save_filepath.set(filepath)
+            self.save_filepath.set(os.path.normpath(filepath))
             self._update_status("Save location selected.")
-            self._save_current_settings() # Save settings on change
         else:
             self._update_status("Save location selection cancelled.")
 
-    def _suggest_save_filename(self):
-         """Suggests the default save filename in an appropriate directory."""
-         scan_dir = self.scan_directory.get()
-         current_save_path = self.save_filepath.get()
-         save_dir = os.path.dirname(current_save_path) if current_save_path else ''
 
-         # If save_dir is not set or invalid, try loading from settings or derive intelligently
-         if not save_dir or not os.path.isdir(save_dir):
-             settings = load_settings()
-             save_dir = settings.get('save_directory', '') # Use saved dir first
-             if not save_dir or not os.path.isdir(save_dir):
-                 # Fallback: Use scan directory if available, otherwise user home
-                 save_dir = scan_dir if scan_dir and os.path.isdir(scan_dir) else os.path.expanduser("~")
-
-         # Always use the default filename
-         self.save_filepath.set(os.path.join(save_dir, DEFAULT_OUTPUT_FILENAME))
-
-
-    # --- Ignore File Path Management ---
-
-    def _initialize_ignore_file(self):
-        """Checks the loaded ignore file path and prompts/loads accordingly."""
-        filepath = self.current_ignore_file_path.get()
+    # --- Rules File Path Management (Full Paths) ---
+    def _initialize_rules_file_and_display(self):
+        """Checks loaded rules file path, loads rules, and updates GUI. Resets dirty flag."""
+        filepath = self.current_rules_filepath.get()
         if filepath:
-            if os.path.exists(filepath):
-                self._load_and_display_ignore_rules(filepath)
-                # Title updated in _load_and_display_ignore_rules
+            normalized_filepath = os.path.normpath(filepath)
+            if os.path.exists(normalized_filepath) and os.path.isfile(normalized_filepath):
+                self._load_and_display_rules(normalized_filepath) 
             else:
-                create = messagebox.askyesno(
+                prompt_create = messagebox.askyesno(
                     "Rules File Not Found",
-                    f"Rules file not found at:\n'{filepath}'\n\nCreate a new empty file there?"
+                    f"Rules file not found or is not a file:\n'{normalized_filepath}'\n\nCreate a new empty rules file there?",
+                    parent=self.root
                 )
-                if create:
-                    if create_empty_file(filepath):
-                         self._clear_and_display_ignore_rules(filepath) # Show empty list
-                    else:
-                        # Error handled in create_empty_file
-                        self.current_ignore_file_path.set("")
-                        self._clear_and_display_ignore_rules(None) # Show empty list, no file loaded
-                else:
-                    self.current_ignore_file_path.set("")
-                    self._clear_and_display_ignore_rules(None) # Show empty list, no file loaded
-        else:
-            self._clear_and_display_ignore_rules(None) # No path set, show empty list
-
-        self._update_ignore_frame_title() # Ensure title is set correctly based on file and mode
+                if prompt_create:
+                    if create_empty_file(normalized_filepath):
+                        self._clear_and_display_rules_list(normalized_filepath) 
+                    else: 
+                        self.current_rules_filepath.set("")
+                        self._clear_and_display_rules_list(None)
+                else: 
+                    self.current_rules_filepath.set("")
+                    self._clear_and_display_rules_list(None)
+        else: 
+            self._clear_and_display_rules_list(None) 
+        self._update_rules_frame_title()
 
 
-    def _browse_ignore_file(self):
-        """Allows user to select or create an ignore file."""
-        initial_dir = os.path.dirname(self.current_ignore_file_path.get()) or \
-                      self.scan_directory.get() or \
-                      os.path.expanduser("~")
+    def _browse_rules_file(self):
+        """Allows user to select or create a rules file. Handles unsaved changes confirmation."""
+        initial_dir_browse = os.path.dirname(self.current_rules_filepath.get()) or \
+                             self.scan_directory.get() or \
+                             os.path.expanduser("~")
 
-        filepath = filedialog.asksaveasfilename(
-            title="Select or Create Rules File",
-            initialdir=initial_dir,
-            initialfile=".scanIgnore",
-            filetypes=[("ScanIgnore Files", ".scanIgnore"), ("Text Files", "*.txt"), ("All Files", "*.*")] # More flexible types
+        filepath_selected = filedialog.asksaveasfilename( 
+            title="Select or Create Path-Based Rules File",
+            initialdir=initial_dir_browse,
+            initialfile=".scanIgnore", 
+            filetypes=[("ScanIgnore Files", ".scanIgnore"), ("Text Files", "*.txt"), ("All Files", "*.*")],
+            parent=self.root
         )
 
-        if filepath:
-            # Check if the user is selecting the *same* file path that's already loaded
-            # Avoid unnecessary reloading/prompts if the path hasn't actually changed.
-            if filepath == self.current_ignore_file_path.get():
-                self._update_status("Selected the current rules file.", clear_after_ms=3000)
-                return # No change needed
+        if filepath_selected:
+            normalized_new_filepath = os.path.normpath(filepath_selected)
+            current_rules_path_val = self.current_rules_filepath.get()
+            current_normalized_path = os.path.normpath(current_rules_path_val) if current_rules_path_val else None
 
-            # Check for unsaved changes *before* switching files
-            if self.ignore_dirty:
+
+            if normalized_new_filepath == current_normalized_path:
+                self._update_status("Selected the current rules file. No change.", clear_after_ms=3000)
+                return
+
+            if self.rules_dirty: 
                 confirm_discard = messagebox.askyesno(
                     "Unsaved Changes",
-                    f"You have unsaved changes in the current rules list for\n'{os.path.basename(self.current_ignore_file_path.get())}'.\n\nDiscard changes and load the new file?",
-                    default=messagebox.NO # Default to not discarding
+                    f"You have unsaved changes in the current rules list for\n'{os.path.basename(current_normalized_path if current_normalized_path else 'Untitled Rules')}'.\n\nDiscard changes and switch to the new file?",
+                    default=messagebox.NO, parent=self.root
                 )
                 if not confirm_discard:
                     self._update_status("Rules file selection cancelled to keep unsaved changes.")
-                    return # User cancelled the switch
+                    return
+                self.rules_dirty = False 
 
-            # Proceed with the new file path
-            self.current_ignore_file_path.set(filepath)
-            if os.path.exists(filepath):
-                self._load_and_display_ignore_rules(filepath) # This updates title and resets dirty flag
-            else:
-                create = messagebox.askyesno(
-                    "Create Rules File?",
-                    f"File '{os.path.basename(filepath)}' does not exist.\n\nCreate it at this location?"
-                )
-                if create:
-                    if create_empty_file(filepath):
-                         self._clear_and_display_ignore_rules(filepath) # Show empty list for new file
-                    else:
-                         # Error handled in create_empty_file, clear the path
-                         self.current_ignore_file_path.set("")
-                         self._clear_and_display_ignore_rules(None)
-                else:
-                     # User chose not to create, clear the selection
-                    self.current_ignore_file_path.set("")
-                    self._clear_and_display_ignore_rules(None)
-
-            self._save_current_settings() # Persist the newly selected ignore file path
+            self.current_rules_filepath.set(normalized_new_filepath) 
+            if os.path.exists(normalized_new_filepath) and os.path.isfile(normalized_new_filepath):
+                self._load_and_display_rules(normalized_new_filepath) 
+            else: 
+                if create_empty_file(normalized_new_filepath): 
+                    self._clear_and_display_rules_list(normalized_new_filepath) 
+                else: 
+                    self.current_rules_filepath.set(current_normalized_path if current_normalized_path else "") 
+                    self._initialize_rules_file_and_display() 
+                    self._update_status("Failed to create new rules file. Selection reverted.", clear_after_ms=4000)
+            self._update_rules_frame_title()
         else:
             self._update_status("Rules file selection cancelled.")
 
 
-    # --- Ignore List Management (Revised) ---
+    # --- Rules List Management (Using Full Paths) ---
 
-    def _update_ignore_frame_title(self):
-        """Updates the LabelFrame title based on loaded file and filter mode."""
-        filepath = self.current_ignore_file_path.get()
+    def _update_rules_frame_title(self):
+        filepath = self.current_rules_filepath.get()
         mode = self.filter_mode_var.get()
-        mode_text = "(Whitelist Mode)" if mode == FILTER_WHITELIST else "(Blacklist Mode)"
+        mode_text = "(Whitelist - Include Paths)" if mode == FILTER_WHITELIST else "(Blacklist - Exclude Paths)"
+        dirty_star = "*" if self.rules_dirty else "" 
 
         if filepath:
-            title = f"Rules List: {os.path.basename(filepath)} {mode_text}"
+            title = f"Rules: {os.path.basename(filepath)}{dirty_star} {mode_text}"
         else:
-            title = f"Rules List (No file selected) {mode_text}"
-        self.ignore_frame.config(text=title)
+            title = f"Rules (No file selected){dirty_star} {mode_text}"
+        self.rules_frame.config(text=title)
 
-
-    def _load_and_display_ignore_rules(self, filepath):
-        """Loads rules from the specified file, updates internal state, and rebuilds the GUI list."""
+    def _load_and_display_rules(self, filepath):
+        """Loads rules (full paths) from file, updates state, rebuilds GUI list. Resets dirty flag."""
         if not filepath:
-            self._clear_and_display_ignore_rules(None)
+            self._clear_and_display_rules_list(None)
             self._update_status("No rules file selected.")
             return
         try:
-            self.ignore_files, self.ignore_folders = load_ignore_rules(filepath)
-            self.ignore_dirty = False # Reset dirty flag on successful load
-            self._rebuild_ignore_list_gui()
-            self._update_status(f"Loaded {len(self.ignore_files) + len(self.ignore_folders)} rules from {os.path.basename(filepath)}")
-            self._update_ignore_frame_title() # Update title after load
+            normalized_filepath = os.path.normpath(filepath)
+            self.rules_files, self.rules_folders = load_ignore_rules(normalized_filepath)
+            self.rules_dirty = False 
+            self._rebuild_rules_list_gui()
+            self._update_status(f"Loaded {len(self.rules_files) + len(self.rules_folders)} rules from {os.path.basename(normalized_filepath)}")
         except Exception as e:
-            messagebox.showerror("Load Error", f"Could not load or parse {os.path.basename(filepath)}:\n{e}")
+            messagebox.showerror("Load Error", f"Could not load or parse {os.path.basename(filepath)}:\n{e}", parent=self.root)
             self._update_status(f"Error loading {os.path.basename(filepath)}")
-            self._clear_and_display_ignore_rules(filepath) # Show empty list but keep path association if load fails
-            self._update_ignore_frame_title() # Update title even on error
+            self._clear_and_display_rules_list(filepath) 
+        finally:
+            self._update_rules_frame_title() 
 
-    def _clear_and_display_ignore_rules(self, filepath):
-        """Clears internal state and rebuilds GUI list, optionally updating frame title."""
-        self.ignore_files, self.ignore_folders = [], []
-        self.ignore_dirty = False # Reset dirty flag
-        self._rebuild_ignore_list_gui()
-        self._update_ignore_frame_title() # Update title
+    def _clear_and_display_rules_list(self, filepath_context):
+        """Clears state, rebuilds GUI list. Resets dirty flag."""
+        self.rules_files, self.rules_folders = [], []
+        self.rules_dirty = False 
+        self._rebuild_rules_list_gui()
 
-        if filepath:
-            self._update_status(f"Cleared rules list for {os.path.basename(filepath)}. File ready.", clear_after_ms=4000)
-        else:
-             self._update_status("No rules file loaded.")
+        if filepath_context: # filepath_context is the path of the file being cleared or created
+            self._update_status(f"Rules list for {os.path.basename(filepath_context)} is now empty. Ready.", clear_after_ms=4000)
+
+        else: # No specific file context (e.g., no file selected at all)
+            self._update_status("No rules file loaded. Rules list cleared.")
+        self._update_rules_frame_title() # Ensure title is updated (e.g., remove dirty star)
 
 
-    def _rebuild_ignore_list_gui(self):
-        """Clears and rebuilds the visual list of ignore rules in the scrollable frame."""
-        # Destroy existing widgets in the frame
-        for widget in self.ignore_list_frame.winfo_children():
-             widget.destroy()
+    def _rebuild_rules_list_gui(self):
+        # This check is important because this method might be called from _clear_and_display_rules_list
+        # during the initial setup BEFORE self.rules_list_frame is fully defined if not careful.
+        # However, with the corrected __init__ sequence, this should always be safe.
+        if not hasattr(self, 'rules_list_frame'):
+            # This case should ideally not be reached if __init__ is structured correctly.
+            # If it is, it indicates an issue with initialization order.
+            print("Warning: _rebuild_rules_list_gui called before rules_list_frame was initialized.")
+            return
+
+        for widget in self.rules_list_frame.winfo_children():
+            widget.destroy()
 
         row_num = 0
-        current_file = self.current_ignore_file_path.get()
+        current_file_path = self.current_rules_filepath.get()
         mode = self.filter_mode_var.get()
-        rule_type_text = "Include" if mode == FILTER_WHITELIST else "Ignore"
+        rule_action_text = "Include Path" if mode == FILTER_WHITELIST else "Exclude Path"
 
-        # Add file rules
-        if self.ignore_files:
-            ttk.Label(self.ignore_list_frame, text=f"Files to {rule_type_text}:", font=('TkDefaultFont', 9, 'bold')).grid(row=row_num, column=0, columnspan=2, sticky=tk.W, padx=5, pady=(5,2))
+        if self.rules_files: 
+            ttk.Label(self.rules_list_frame, text=f"Files to {rule_action_text}:", font=('TkDefaultFont', 9, 'bold')).grid(row=row_num, column=0, columnspan=2, sticky=tk.W, padx=5, pady=(5,2))
             row_num += 1
-            for pattern in self.ignore_files: # Assumes already sorted by load/add
-                item_frame = ttk.Frame(self.ignore_list_frame)
+            for path_rule in sorted(self.rules_files):
+                item_frame = ttk.Frame(self.rules_list_frame)
                 item_frame.grid(row=row_num, column=0, columnspan=2, sticky=tk.EW, padx=5, pady=1)
                 item_frame.columnconfigure(0, weight=1)
 
-                label_text = f"file: {pattern}"
-                max_len = 60
-                display_text = label_text if len(label_text) <= max_len else label_text[:max_len-3] + "..."
+                label_text = f"file: {path_rule}" 
+                max_len = 75
+                display_text = label_text if len(label_text) <= max_len else "..." + label_text[-(max_len-3):]
                 tooltip_text = label_text if len(label_text) > max_len else None
 
                 lbl = ttk.Label(item_frame, text=display_text, anchor=tk.W)
                 lbl.grid(row=0, column=0, sticky=tk.EW)
-                if tooltip_text:
-                    ToolTip(lbl, tooltip_text) # Use ToolTip class
+                if tooltip_text: ToolTip(lbl, tooltip_text)
 
                 remove_button = ttk.Button(item_frame, text="x", width=2, style="Small.TButton",
-                                           command=lambda p=pattern: self._remove_ignore_item('file', p))
+                                           command=lambda p=path_rule: self._remove_rule_item('file', p))
                 remove_button.grid(row=0, column=1, sticky=tk.E, padx=(5, 0))
                 row_num += 1
 
-        # Add folder rules
-        if self.ignore_folders:
-            ttk.Label(self.ignore_list_frame, text=f"Folders to {rule_type_text}:", font=('TkDefaultFont', 9, 'bold')).grid(row=row_num, column=0, columnspan=2, sticky=tk.W, padx=5, pady=(10,2))
+        if self.rules_folders: 
+            ttk.Label(self.rules_list_frame, text=f"Folders to {rule_action_text}:", font=('TkDefaultFont', 9, 'bold')).grid(row=row_num, column=0, columnspan=2, sticky=tk.W, padx=5, pady=(10,2))
             row_num += 1
-            for pattern in self.ignore_folders: # Assumes already sorted
-                item_frame = ttk.Frame(self.ignore_list_frame)
+            for path_rule in sorted(self.rules_folders):
+                item_frame = ttk.Frame(self.rules_list_frame)
                 item_frame.grid(row=row_num, column=0, columnspan=2, sticky=tk.EW, padx=5, pady=1)
                 item_frame.columnconfigure(0, weight=1)
 
-                label_text = f"folder: {pattern}"
-                max_len = 60
-                display_text = label_text if len(label_text) <= max_len else label_text[:max_len-3] + "..."
+                label_text = f"folder: {path_rule}" 
+                max_len = 75
+                display_text = label_text if len(label_text) <= max_len else "..." + label_text[-(max_len-3):]
                 tooltip_text = label_text if len(label_text) > max_len else None
 
                 lbl = ttk.Label(item_frame, text=display_text, anchor=tk.W)
                 lbl.grid(row=0, column=0, sticky=tk.EW)
-                if tooltip_text:
-                    ToolTip(lbl, tooltip_text) # Use ToolTip class
+                if tooltip_text: ToolTip(lbl, tooltip_text)
 
                 remove_button = ttk.Button(item_frame, text="x", width=2, style="Small.TButton",
-                                           command=lambda p=pattern: self._remove_ignore_item('folder', p))
+                                           command=lambda p=path_rule: self._remove_rule_item('folder', p))
                 remove_button.grid(row=0, column=1, sticky=tk.E, padx=(5, 0))
                 row_num += 1
 
-        # Define a smaller button style if possible
         style = ttk.Style()
-        try:
-            style.configure("Small.TButton", padding=(1, 1), font=('TkDefaultFont', 7))
-        except tk.TclError:
-             pass # Ignore if style cannot be applied
+        try: style.configure("Small.TButton", padding=(1, 1), font=('TkDefaultFont', 7))
+        except tk.TclError: pass
 
-        # Add placeholder if list is empty
-        if not self.ignore_files and not self.ignore_folders:
-             placeholder_text = "No rules defined." if current_file else "No rules file selected or rules defined."
-             ttk.Label(self.ignore_list_frame, text=placeholder_text, foreground="grey").grid(row=0, column=0, columnspan=2, padx=5, pady=5)
+        if not self.rules_files and not self.rules_folders:
+            placeholder_text = "No rules defined." if current_file_path else "No rules file selected or rules defined."
+            ttk.Label(self.rules_list_frame, text=placeholder_text, foreground="grey").grid(row=0, column=0, columnspan=2, padx=5, pady=5)
 
-
-        # Update scroll region after adding items
-        self.ignore_list_frame.update_idletasks() # Ensure frame size is calculated
+        self.rules_list_frame.update_idletasks()
         self._on_frame_configure()
+        self._update_rules_frame_title() 
 
 
-    def _remove_ignore_item(self, item_type, pattern):
-        """Removes an item from the internal list and refreshes the GUI."""
+    def _remove_rule_item(self, item_type, path_pattern):
+        """Removes a full path rule from internal list and refreshes GUI. Path_pattern is assumed normalized."""
         removed = False
         if item_type == 'file':
-            if pattern in self.ignore_files:
-                self.ignore_files.remove(pattern)
+            if path_pattern in self.rules_files:
+                self.rules_files.remove(path_pattern)
                 removed = True
         elif item_type == 'folder':
-            if pattern in self.ignore_folders:
-                self.ignore_folders.remove(pattern)
+            if path_pattern in self.rules_folders:
+                self.rules_folders.remove(path_pattern)
                 removed = True
 
         if removed:
-            self.ignore_dirty = True # Mark changes as dirty
-            self._rebuild_ignore_list_gui() # Update display
-            self._update_status(f"Removed rule '{pattern}'. Save changes to persist.", clear_after_ms=4000)
-        else:
-             self._update_status(f"Rule '{pattern}' not found for removal.", clear_after_ms=4000)
+            self.rules_dirty = True
+            self._rebuild_rules_list_gui() 
+            self._update_status(f"Removed rule for '{os.path.basename(path_pattern)}'. Save changes to persist.", clear_after_ms=4000)
+        else: 
+            self._update_status(f"Rule for '{os.path.basename(path_pattern)}' not found for removal.", clear_after_ms=4000)
 
 
-    def _add_files_to_ignore(self):
-        """Adds selected file basenames as rules to the internal list."""
-        if not self.current_ignore_file_path.get():
-             messagebox.showwarning("No Rules File", "Please select or create a rules file first using 'Browse...'.")
-             return
+    def _add_file_rules(self):
+        """Adds selected files by their full absolute path as rules."""
+        if not self.current_rules_filepath.get(): 
+            messagebox.showwarning("No Rules File Active", "Please select or create a rules file first before adding rules to it.", parent=self.root)
+            return
 
-        initial_dir = self.scan_directory.get() or os.path.dirname(self.current_ignore_file_path.get()) or os.path.expanduser("~")
-        filenames = filedialog.askopenfilenames(
-            title="Select File(s) to Add Rule For",
-            initialdir=initial_dir
+        initial_dir_add = self.scan_directory.get() if self.scan_directory.get() and os.path.isdir(self.scan_directory.get()) else os.path.expanduser("~")
+        filepaths_to_add = filedialog.askopenfilenames(
+            title="Select File(s) to Add Rule For (Full Path)",
+            initialdir=initial_dir_add, parent=self.root
         )
-        if not filenames:
+        if not filepaths_to_add:
             self._update_status("Add file rule(s) cancelled.")
             return
 
         added_count = 0
-        newly_added = []
-        for fname in filenames:
-            basename = os.path.basename(fname)
-            if basename and basename not in self.ignore_files:
-                self.ignore_files.append(basename)
-                newly_added.append(basename)
+        for fp_raw in filepaths_to_add:
+            normalized_fp_add = os.path.normpath(fp_raw) 
+            if normalized_fp_add and normalized_fp_add not in self.rules_files:
+                self.rules_files.append(normalized_fp_add)
                 added_count += 1
 
         if added_count > 0:
-            self.ignore_files.sort() # Keep sorted
-            self.ignore_dirty = True # Mark changes as dirty
-            self._rebuild_ignore_list_gui()
+            self.rules_files.sort()
+            self.rules_dirty = True
+            self._rebuild_rules_list_gui() 
             self._update_status(f"Added {added_count} file rule(s). Save changes to persist.", clear_after_ms=4000)
-        else:
+        elif filepaths_to_add : 
             self._update_status("Selected file rule(s) already in list or invalid.")
 
+    def _add_folder_rule(self):
+        """Adds a selected folder by its full absolute path as a rule."""
+        if not self.current_rules_filepath.get():
+            messagebox.showwarning("No Rules File Active", "Please select or create a rules file first before adding rules to it.", parent=self.root)
+            return
 
-    def _add_folder_to_ignore(self):
-        """Adds a selected folder basename as a rule to the internal list."""
-        if not self.current_ignore_file_path.get():
-             messagebox.showwarning("No Rules File", "Please select or create a rules file first using 'Browse...'.")
-             return
-
-        initial_dir = self.scan_directory.get() or os.path.dirname(self.current_ignore_file_path.get()) or os.path.expanduser("~")
-        foldername = filedialog.askdirectory(
-            title="Select Folder to Add Rule For",
-            initialdir=initial_dir
+        initial_dir_add_folder = self.scan_directory.get() if self.scan_directory.get() and os.path.isdir(self.scan_directory.get()) else os.path.expanduser("~")
+        folderpath_to_add = filedialog.askdirectory(
+            title="Select Folder to Add Rule For (Full Path)",
+            initialdir=initial_dir_add_folder, parent=self.root
         )
-        if not foldername:
+        if not folderpath_to_add:
             self._update_status("Add folder rule cancelled.")
             return
 
-        basename = os.path.basename(foldername)
-        if basename and basename not in self.ignore_folders:
-            self.ignore_folders.append(basename)
-            self.ignore_folders.sort() # Keep sorted
-            self.ignore_dirty = True # Mark changes as dirty
-            self._rebuild_ignore_list_gui()
-            self._update_status(f"Added folder rule '{basename}'. Save changes to persist.", clear_after_ms=4000)
-        elif basename:
-             self._update_status(f"Folder rule '{basename}' already in list.")
-        else:
-             self._update_status("Invalid folder selected.")
+        normalized_fp_add_folder = os.path.normpath(folderpath_to_add) 
+        if normalized_fp_add_folder and normalized_fp_add_folder not in self.rules_folders:
+            self.rules_folders.append(normalized_fp_add_folder)
+            self.rules_folders.sort()
+            self.rules_dirty = True
+            self._rebuild_rules_list_gui() 
+            self._update_status(f"Added folder rule for '{os.path.basename(normalized_fp_add_folder)}'. Save changes to persist.", clear_after_ms=4000)
+        elif normalized_fp_add_folder: 
+            self._update_status(f"Folder rule for '{os.path.basename(normalized_fp_add_folder)}' already in list.")
 
 
-    def _save_ignore_changes(self):
-        """Saves the current internal rules lists to the selected rules file."""
-        current_path = self.current_ignore_file_path.get()
+    def _save_rules_list_changes(self):
+        """Saves the current internal rules lists (full paths) to the selected rules file."""
+        current_path_to_save = self.current_rules_filepath.get()
+        if not current_path_to_save: 
+            self._update_status("No rules file is active. Please select or create one.")
+            messagebox.showerror("Save Error", "No rules file is currently active to save to.", parent=self.root)
+            return
 
-        if not current_path:
-            # If no path is set, force user to select one now
-            self._update_status("Please select save location for rules list.")
-            self._browse_ignore_file()
-            current_path = self.current_ignore_file_path.get() # Re-check path after browse
-            if not current_path:
-                 self._update_status("Save cancelled: No rules file selected.")
-                 return # Abort save if browse was cancelled
-
-        # Proceed only if a path is now set
-        if not self.ignore_dirty:
-             self._update_status(f"No changes to save in {os.path.basename(current_path)}.")
-             return
+        normalized_current_path_save = os.path.normpath(current_path_to_save)
+        if not self.rules_dirty:
+            self._update_status(f"No unsaved changes in {os.path.basename(normalized_current_path_save)}.")
+            return
 
         try:
-            save_ignore_rules(current_path, self.ignore_files, self.ignore_folders)
-            self.ignore_dirty = False # Reset dirty flag on successful save
-            # Persist the path *and other settings* used for saving
-            self._save_current_settings()
-            self._update_status(f"Saved changes to {os.path.basename(current_path)}", clear_after_ms=3000)
+            normalized_files_to_save = sorted([os.path.normpath(p) for p in self.rules_files])
+            normalized_folders_to_save = sorted([os.path.normpath(p) for p in self.rules_folders])
+            save_ignore_rules(normalized_current_path_save, normalized_files_to_save, normalized_folders_to_save)
+            self.rules_dirty = False 
+            self._rebuild_rules_list_gui() 
+            self._update_status(f"Saved changes to {os.path.basename(normalized_current_path_save)}", clear_after_ms=3000)
         except Exception as e:
-            messagebox.showerror("Save Error", f"Could not save {os.path.basename(current_path)}:\n{e}")
-            self._update_status(f"Error saving {os.path.basename(current_path)}")
+            messagebox.showerror("Save Error", f"Could not save rules to {os.path.basename(normalized_current_path_save)}:\n{e}", parent=self.root)
+            self._update_status(f"Error saving {os.path.basename(normalized_current_path_save)}")
 
 
-    # --- Default Ignore Rules Handling ---
-
-    def _load_defaults(self):
-        """Loads rules from .scanIgnore.defaults and merges them into the current UI lists."""
-        if not self.current_ignore_file_path.get():
-             messagebox.showwarning("No Rules File", "Please select or create a rules file first before loading defaults.")
-             return
-
-        try:
-            default_files, default_folders = load_ignore_rules(DEFAULT_IGNORE_PATH)
-        except Exception as e:
-             # Log error but proceed as if defaults were empty
-             print(f"Could not load default ignore rules from {DEFAULT_IGNORE_PATH}: {e}")
-             default_files, default_folders = [], []
-             if not os.path.exists(DEFAULT_IGNORE_PATH):
-                  self._update_status(f"Default file {DEFAULT_IGNORE_FILE} not found. No defaults loaded.", clear_after_ms=4000)
-             else:
-                  self._update_status(f"Error loading defaults from {DEFAULT_IGNORE_FILE}. No defaults loaded.", clear_after_ms=4000)
-
-
-        merged_files_count = 0
-        for f_pattern in default_files:
-            if f_pattern not in self.ignore_files:
-                self.ignore_files.append(f_pattern)
-                merged_files_count += 1
-
-        merged_folders_count = 0
-        for f_pattern in default_folders:
-            if f_pattern not in self.ignore_folders:
-                self.ignore_folders.append(f_pattern)
-                merged_folders_count += 1
-
-        total_merged = merged_files_count + merged_folders_count
-        if total_merged > 0:
-            self.ignore_files.sort()
-            self.ignore_folders.sort()
-            self.ignore_dirty = True # Mark as dirty after merging
-            self._rebuild_ignore_list_gui()
-            self._update_status(f"Merged {total_merged} default rule(s). Save changes to persist.", clear_after_ms=5000)
-        else:
-            self._update_status(f"No new rules merged from {DEFAULT_IGNORE_FILE}.", clear_after_ms=3000)
-
-    # Inside CodeScannerApp class
+    # --- Default Ignore Rules Handling (Name-based, for .scanIgnore.defaults) ---
     def _edit_defaults_dialog(self):
-        """Opens a modal dialog to edit the .scanIgnore.defaults file."""
-        # Pass 'self' (the CodeScannerApp instance) to the dialog constructor
+        """Opens modal to edit .scanIgnore.defaults (name-based patterns)."""
         dialog = EditDefaultsDialog(self.root, DEFAULT_IGNORE_PATH, app_instance=self)
-        # The dialog handles its own loading/saving logic and modality
 
-    # --- Scan Execution (Threaded, Revised Pre-checks and Loading) ---
-    def _run_scan_thread(self, scan_dir, save_path, rules_files, rules_folders, filter_mode, used_rules_file):
-         """Target function for the scanning thread. Uses provided rules and mode."""
-         try:
-             with open(save_path, "w", encoding="utf-8") as output_file:
-                 # Write Header Info
-                 output_file.write(f"# Codebase Scan: {os.path.basename(scan_dir)}\n\n")
-                 mode_desc = "Whitelist (Including only listed)" if filter_mode == FILTER_WHITELIST else "Blacklist (Excluding listed)"
-                 output_file.write(f"**Mode:** `{mode_desc}`\n")
-                 rules_source = f"`{used_rules_file}`" if used_rules_file else "`None`"
-                 output_file.write(f"**Rules From:** {rules_source}\n\n")
 
-                 # Start processing from the root scan directory
-                 process_directory(
-                     scan_dir, output_file, rules_files, rules_folders,
-                     filter_mode, level=0, status_callback=self._update_status,
-                     is_whitelisted_content=False # Root level is never whitelisted content initially
-                 )
+    # --- Scan Execution ---
+    def _run_scan_thread(self, scan_dir_norm, save_path_norm, rules_files_for_scan, rules_folders_for_scan, filter_mode_val, used_rules_file_display_path):
+        """
+        Target function for the scanning thread.
+        Args:
+            scan_dir_norm (str): Normalized path of the directory to scan.
+            save_path_norm (str): Normalized path to save the output file.
+            rules_files_for_scan (list): Normalized file path rules for this scan.
+            rules_folders_for_scan (list): Normalized folder path rules for this scan.
+            filter_mode_val (str): 'whitelist' or 'blacklist'.
+            used_rules_file_display_path (str): Path of the rules file used (for logging in output, can be just basename or full).
+        """
+        try:
+            with open(save_path_norm, "w", encoding="utf-8") as output_file:
+                output_file.write(f"# Codebase Scan: {os.path.basename(scan_dir_norm)}\n\n")
+                mode_desc = "Whitelist (Including only listed paths)" if filter_mode_val == FILTER_WHITELIST else "Blacklist (Excluding listed paths)"
+                output_file.write(f"**Mode:** `{mode_desc}`\n")
+                rules_source_display = f"`{os.path.basename(used_rules_file_display_path)}` (from `{used_rules_file_display_path}`)" if used_rules_file_display_path else "`None (No rules file specified)`"
+                output_file.write(f"**Rules From:** {rules_source_display}\n\n")
 
-             # Post-scan actions (back on main thread)
-             def on_scan_complete():
-                 # Save settings AFTER scan completes successfully
-                 self._save_current_settings()
-                 self._update_status(f"Scan complete. Output saved to: {save_path}", clear_after_ms=10000)
-                 messagebox.showinfo("Scan Complete", f"Output successfully saved to:\n{save_path}")
+                initial_whitelisted_ancestors = []
+                if filter_mode_val == FILTER_WHITELIST and scan_dir_norm in rules_folders_for_scan:
+                    initial_whitelisted_ancestors.append(scan_dir_norm)
+                
+                process_directory(
+                    scan_dir_norm, output_file, rules_files_for_scan, rules_folders_for_scan,
+                    filter_mode_val, level=0, status_callback=self._update_status,
+                    whitelisted_ancestor_folders=initial_whitelisted_ancestors
+                )
 
-             self.root.after(0, on_scan_complete)
+            def on_scan_complete(): 
+                self._update_status(f"Scan complete. Output saved to: {save_path_norm}", clear_after_ms=10000)
+                messagebox.showinfo("Scan Complete", f"Output successfully saved to:\n{save_path_norm}", parent=self.root)
+            self.root.after(0, on_scan_complete)
 
-         except Exception as e:
-             # Error handling (back on main thread)
-             def on_scan_error():
-                 error_message = f"An error occurred during scanning or writing: {e}"
-                 print(error_message) # Log detailed error
-                 import traceback
-                 traceback.print_exc() # Print stack trace for debugging
-                 self._update_status(f"Error during scan: {e}", clear_after_ms=10000)
-                 messagebox.showerror("Scan Error", error_message)
+        except Exception as e:
+            def on_scan_error(): 
+                error_message = f"An error occurred during scanning or writing: {e}"
+                print(f"Full scan error details: {error_message}")
+                import traceback
+                traceback.print_exc() 
+                self._update_status(f"Error during scan: {e}", clear_after_ms=10000)
+                messagebox.showerror("Scan Error", error_message, parent=self.root)
+            self.root.after(0, on_scan_error)
 
-             self.root.after(0, on_scan_error)
 
     def _run_scan(self):
-        """Validates inputs and starts the scan process in a thread."""
-        scan_dir = self.scan_directory.get()
-        save_path = self.save_filepath.get()
-        rules_path = self.current_ignore_file_path.get() # Get selected rules file
-        filter_mode = self.filter_mode_var.get() # Get selected filter mode
+        scan_dir_ui = self.scan_directory.get()
+        save_path_ui = self.save_filepath.get()
+        rules_path_ui_current = self.current_rules_filepath.get() 
+        filter_mode_selected = self.filter_mode_var.get()
 
-        # --- Input Validation ---
-        if not scan_dir or not os.path.isdir(scan_dir):
-            messagebox.showerror("Input Error", "Please select a valid directory to scan.")
-            self._update_status("Error: Invalid scan directory.", clear_after_ms=5000)
-            return
-        if not save_path:
-            messagebox.showerror("Input Error", "Please select a valid output file path.")
-            self._update_status("Error: Invalid save location.", clear_after_ms=5000)
-            return
+        if not scan_dir_ui or not os.path.isdir(scan_dir_ui):
+            messagebox.showerror("Input Error", "Please select a valid directory to scan.", parent=self.root)
+            self._update_status("Error: Invalid scan directory.", clear_after_ms=5000); return
+        if not save_path_ui:
+            messagebox.showerror("Input Error", "Please select a valid output file path.", parent=self.root)
+            self._update_status("Error: Invalid save location.", clear_after_ms=5000); return
 
-        # --- Rules File Path Check ---
-        if not rules_path:
-            messagebox.showerror("Input Error", "Please select or create a rules file using the 'Browse...' button before scanning.")
-            self._update_status("Error: No rules file selected.", clear_after_ms=5000)
-            return
-        if not os.path.exists(rules_path):
-             messagebox.showerror("Input Error", f"The selected rules file does not exist:\n{rules_path}\nPlease select a valid file.")
-             self._update_status("Error: Selected rules file not found.", clear_after_ms=5000)
-             return
+        if not rules_path_ui_current: 
+            messagebox.showerror("Input Error", "Please select or create a rules file using the 'Browse...' button before scanning.", parent=self.root)
+            self._update_status("Error: No rules file selected.", clear_after_ms=5000); return
 
+        normalized_rules_path_for_scan = os.path.normpath(rules_path_ui_current)
+        if not os.path.exists(normalized_rules_path_for_scan) or not os.path.isfile(normalized_rules_path_for_scan):
+             messagebox.showerror("Input Error", f"The selected rules file does not exist or is not a file:\n{normalized_rules_path_for_scan}\nPlease select a valid file.", parent=self.root)
+             self._update_status("Error: Selected rules file not found or invalid.", clear_after_ms=5000); return
 
-        save_dir = os.path.dirname(save_path)
-        if not os.path.exists(save_dir):
-            try:
-                os.makedirs(save_dir)
+        save_dir_for_output = os.path.dirname(save_path_ui)
+        if not os.path.exists(save_dir_for_output):
+            try: os.makedirs(save_dir_for_output, exist_ok=True) 
             except Exception as e:
-                 messagebox.showerror("Input Error", f"Could not create save directory:\n{save_dir}\nError: {e}")
-                 self._update_status(f"Error: Cannot create save directory.", clear_after_ms=5000)
-                 return
+                 messagebox.showerror("Input Error", f"Could not create save directory:\n{save_dir_for_output}\nError: {e}", parent=self.root)
+                 self._update_status(f"Error: Cannot create save directory.", clear_after_ms=5000); return
 
-        # --- Check for Unsaved Ignore Changes ---
-        if self.ignore_dirty:
-            confirm = messagebox.askyesno(
-                "Unsaved Changes",
-                f"You have unsaved changes in the rules list for\n'{os.path.basename(rules_path)}'.\n\nSave them before scanning?",
-                default=messagebox.YES
+        if self.rules_dirty: 
+            confirm_save = messagebox.askyesno(
+                "Unsaved Rule Changes",
+                f"You have unsaved changes in the rules list for\n'{os.path.basename(normalized_rules_path_for_scan)}'.\n\nSave them before scanning?",
+                default=messagebox.YES, parent=self.root
             )
-            if confirm:
-                self._save_ignore_changes()
-                if self.ignore_dirty: # Check if save failed (e.g., permission error)
-                     messagebox.showerror("Save Failed", f"Could not save {os.path.basename(rules_path)}. Aborting scan.")
-                     self._update_status("Save failed. Scan aborted.", clear_after_ms=5000)
-                     return
-            else:
-                 # User chose not to save. Scan will use the rules currently *in the file*.
-                 self._update_status(f"Proceeding with scan using saved rules from {os.path.basename(rules_path)} (unsaved changes ignored).", clear_after_ms=5000)
-                 # No need to reload UI here, just proceed to load for scan thread
+            if confirm_save:
+                self._save_rules_list_changes() 
+                if self.rules_dirty: 
+                     messagebox.showerror("Save Failed", f"Could not save rule changes to {os.path.basename(normalized_rules_path_for_scan)}. Aborting scan.", parent=self.root)
+                     self._update_status("Save failed. Scan aborted.", clear_after_ms=5000); return
 
-
-        # --- Prepare rules lists for the scan thread ---
-        # ALWAYS load the rules directly from the specified rules file *at this moment* for the scan.
-        scan_rules_files, scan_rules_folders = [], [] # Initialize
         try:
-            # Load strictly parsed rules for the scan
-            scan_rules_files, scan_rules_folders = load_ignore_rules(rules_path)
-            mode_text = "Whitelist" if filter_mode == FILTER_WHITELIST else "Blacklist"
-            status_msg = f"Starting {mode_text} scan, using {len(scan_rules_files)} file / {len(scan_rules_folders)} folder patterns from {os.path.basename(rules_path)}."
-            self._update_status(status_msg)
-            print(status_msg) # Also log which file is used
-        except Exception as e:
-            messagebox.showerror("Rules File Error", f"Could not read or parse {os.path.basename(rules_path)} for scanning:\n{e}")
-            self._update_status(f"Error loading rules file for scan.", clear_after_ms=5000)
-            return
+            scan_rules_files_from_file_norm, scan_rules_folders_from_file_norm = load_ignore_rules(normalized_rules_path_for_scan)
+            norm_scan_dir_for_thread = os.path.normpath(scan_dir_ui)
+            norm_save_path_for_thread = os.path.normpath(save_path_ui)
 
-        # --- Start scan in a separate thread ---
-        self._update_status("Scanning...")
+            mode_text_display_scan = "Whitelist" if filter_mode_selected == FILTER_WHITELIST else "Blacklist"
+            status_msg_scan = f"Starting {mode_text_display_scan} scan. Using rules from: {normalized_rules_path_for_scan}."
+            self._update_status(status_msg_scan)
+            print(status_msg_scan) 
+        except Exception as e:
+            messagebox.showerror("Rules File Error", f"Could not read or parse rules from {os.path.basename(normalized_rules_path_for_scan)} for scanning:\n{e}", parent=self.root)
+            self._update_status(f"Error loading rules file for scan. Scan aborted.", clear_after_ms=5000); return
+
+        self._update_status("Scanning in progress...")
         scan_thread = threading.Thread(
             target=self._run_scan_thread,
-            args=(scan_dir, save_path, scan_rules_files, scan_rules_folders, filter_mode, rules_path), # Pass rules path for logging
+            args=(norm_scan_dir_for_thread, norm_save_path_for_thread,
+                  scan_rules_files_from_file_norm, scan_rules_folders_from_file_norm, 
+                  filter_mode_selected, normalized_rules_path_for_scan), 
             daemon=True
         )
         scan_thread.start()
 
 
-# --- Edit Defaults Dialog Class ---
+# --- Edit Defaults Dialog Class (Manages name-based .scanIgnore.defaults) ---
 class EditDefaultsDialog(Toplevel):
-    def __init__(self, parent, default_filepath, app_instance): # Added app_instance
+    def __init__(self, parent, default_filepath, app_instance):
         super().__init__(parent)
-        self.default_filepath = default_filepath
-        self.app_instance = app_instance # Store the reference to the main app
+        self.default_filepath = default_filepath 
+        self.app_instance = app_instance
 
-        self.title(f"Edit Defaults ({os.path.basename(default_filepath)})")
-        self.geometry("500x450") # Adjust size as needed
-        self.transient(parent) # Associate with parent window
-        self.grab_set() # Make modal
+        self.title(f"Edit Default Name Patterns ({os.path.basename(default_filepath)})")
+        self.geometry("600x500") 
+        self.transient(parent)
+        self.grab_set() 
 
-        # --- State for Dialog ---
-        self.dialog_ignore_files = []
-        self.dialog_ignore_folders = []
+        self.dialog_rule_file_patterns = []
+        self.dialog_rule_folder_patterns = []
 
-        # --- Layout ---
         main_dialog_frame = ttk.Frame(self, padding="10")
         main_dialog_frame.pack(fill=tk.BOTH, expand=True)
         main_dialog_frame.columnconfigure(0, weight=1)
-        main_dialog_frame.rowconfigure(0, weight=1) # List area expands
+        main_dialog_frame.rowconfigure(1, weight=1) 
 
-        # --- Ignore List Section (Replicated from main app) ---
-        dialog_ignore_frame = ttk.LabelFrame(main_dialog_frame, text="Default Ignore/Include Rules", padding="5") # Adjusted title
-        dialog_ignore_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
-        dialog_ignore_frame.columnconfigure(0, weight=1)
-        dialog_ignore_frame.rowconfigure(0, weight=1)
+        input_frame = ttk.Frame(main_dialog_frame)
+        input_frame.grid(row=0, column=0, sticky=tk.EW, pady=(0,10))
+        input_frame.columnconfigure(0, weight=1)
 
-        self.dialog_ignore_canvas = tk.Canvas(dialog_ignore_frame, borderwidth=0)
-        self.dialog_ignore_list_frame = ttk.Frame(self.dialog_ignore_canvas)
-        self.dialog_ignore_scrollbar = ttk.Scrollbar(dialog_ignore_frame, orient="vertical", command=self.dialog_ignore_canvas.yview)
-        self.dialog_ignore_canvas.configure(yscrollcommand=self.dialog_ignore_scrollbar.set)
+        self.pattern_entry_var = tk.StringVar()
+        pattern_entry = ttk.Entry(input_frame, textvariable=self.pattern_entry_var, width=40)
+        pattern_entry.grid(row=0, column=0, sticky=tk.EW, padx=(0,5))
+        ToolTip(pattern_entry, "Enter a file/folder name or simple pattern (e.g., '*.log', 'temp_folder') to add to defaults.")
 
-        self.dialog_ignore_canvas.grid(row=0, column=0, sticky="nsew")
-        self.dialog_ignore_scrollbar.grid(row=0, column=1, sticky="ns")
+        add_file_pattern_btn = ttk.Button(input_frame, text="Add File Pattern", command=lambda: self._dialog_add_name_pattern('file'))
+        add_file_pattern_btn.grid(row=0, column=1, padx=5)
+        add_folder_pattern_btn = ttk.Button(input_frame, text="Add Folder Pattern", command=lambda: self._dialog_add_name_pattern('folder'))
+        add_folder_pattern_btn.grid(row=0, column=2, padx=5)
 
-        self.dialog_canvas_window = self.dialog_ignore_canvas.create_window((0, 0), window=self.dialog_ignore_list_frame, anchor="nw")
 
-        self.dialog_ignore_list_frame.bind("<Configure>", self._on_dialog_frame_configure)
-        self.dialog_ignore_canvas.bind('<Configure>', self._on_dialog_canvas_configure)
-        # Bind mouse wheel for dialog canvas
-        self.dialog_ignore_canvas.bind("<MouseWheel>", self._on_dialog_mousewheel)
-        self.dialog_ignore_canvas.bind("<Button-4>", self._on_dialog_mousewheel)
-        self.dialog_ignore_canvas.bind("<Button-5>", self._on_dialog_mousewheel)
+        dialog_rules_frame = ttk.LabelFrame(main_dialog_frame, text="Default File/Folder Name Patterns List", padding="5")
+        dialog_rules_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        dialog_rules_frame.columnconfigure(0, weight=1)
+        dialog_rules_frame.rowconfigure(0, weight=1) 
 
-        # --- Dialog Buttons Frame ---
-        dialog_buttons_frame = ttk.Frame(dialog_ignore_frame)
-        dialog_buttons_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        self.dialog_rules_canvas = tk.Canvas(dialog_rules_frame, borderwidth=0)
+        self.dialog_rules_list_frame = ttk.Frame(self.dialog_rules_canvas) 
+        self.dialog_rules_scrollbar = ttk.Scrollbar(dialog_rules_frame, orient="vertical", command=self.dialog_rules_canvas.yview)
+        self.dialog_rules_canvas.configure(yscrollcommand=self.dialog_rules_scrollbar.set)
 
-        add_file_button = ttk.Button(dialog_buttons_frame, text="Add File Rule(s)", command=self._dialog_add_files)
-        add_file_button.pack(side=tk.LEFT, padx=5)
+        self.dialog_rules_canvas.grid(row=0, column=0, sticky="nsew") 
+        self.dialog_rules_scrollbar.grid(row=0, column=1, sticky="ns") 
 
-        add_folder_button = ttk.Button(dialog_buttons_frame, text="Add Folder Rule", command=self._dialog_add_folder)
-        add_folder_button.pack(side=tk.LEFT, padx=5)
+        self.dialog_canvas_window = self.dialog_rules_canvas.create_window((0, 0), window=self.dialog_rules_list_frame, anchor="nw")
 
-        # --- Save/Cancel Buttons ---
+        self.dialog_rules_list_frame.bind("<Configure>", self._on_dialog_list_frame_configure) 
+        self.dialog_rules_canvas.bind('<Configure>', self._on_dialog_canvas_viewport_configure) 
+        self.dialog_rules_canvas.bind("<MouseWheel>", self._on_dialog_specific_mousewheel)
+        self.dialog_rules_canvas.bind("<Button-4>", self._on_dialog_specific_mousewheel) 
+        self.dialog_rules_canvas.bind("<Button-5>", self._on_dialog_specific_mousewheel) 
+
         action_buttons_frame = ttk.Frame(main_dialog_frame)
-        action_buttons_frame.grid(row=1, column=0, columnspan=2, sticky=tk.E, pady=5)
-
-        save_button = ttk.Button(action_buttons_frame, text="Save Defaults", command=self._save_and_close, style="Accent.TButton")
+        action_buttons_frame.grid(row=2, column=0, sticky=tk.E, pady=(10,0))
+        save_button = ttk.Button(action_buttons_frame, text="Save Defaults", command=self._save_and_close_name_patterns, style="Accent.TButton")
         save_button.pack(side=tk.LEFT, padx=5)
-
         cancel_button = ttk.Button(action_buttons_frame, text="Cancel", command=self.destroy)
         cancel_button.pack(side=tk.LEFT, padx=5)
 
-        # --- Load Initial Data ---
-        self._load_initial_defaults()
+        self._load_initial_name_patterns() 
+        self.wait_window(self) 
 
-        # Wait for the dialog to close
+
+    def _on_dialog_list_frame_configure(self, event=None):
+        """Update scrollregion of the canvas when the frame within it resizes."""
+        self.dialog_rules_canvas.configure(scrollregion=self.dialog_rules_canvas.bbox("all"))
+    def _on_dialog_canvas_viewport_configure(self, event):
+        """Update the width of the frame within the canvas when canvas viewport resizes."""
+        self.dialog_rules_canvas.itemconfig(self.dialog_canvas_window, width=event.width)
+
+    def _on_dialog_specific_mousewheel(self, event):
+        """Handles mousewheel scrolling specifically for the dialog's canvas."""
+        if event.num == 5 or event.delta < 0: 
+            self.dialog_rules_canvas.yview_scroll(1, "units")
+        elif event.num == 4 or event.delta > 0: 
+            self.dialog_rules_canvas.yview_scroll(-1, "units")
+
+
+    def _load_initial_name_patterns(self):
+        """Loads name/pattern rules from the .scanIgnore.defaults file into dialog state."""
+        self.dialog_rule_file_patterns = []
+        self.dialog_rule_folder_patterns = []
+        try:
+            if not os.path.exists(self.default_filepath): 
+                with open(self.default_filepath, "w", encoding="utf-8") as f:
+                    f.write("# Default files to ignore (name patterns, e.g., *.log, specific_file.tmp)\n")
+                    f.write("file: .DS_Store\n")
+                    f.write("file: thumbs.db\n")
+                    f.write("file: desktop.ini\n")
+                    f.write("\n# Default folders to ignore (name patterns, e.g., .git, node_modules)\n")
+                    f.write("folder: .git\n")
+                    f.write("folder: .svn\n")
+                    f.write("folder: .hg\n")
+                    f.write("folder: .venv\n")
+                    f.write("folder: venv\n")
+                    f.write("folder: node_modules\n")
+                    f.write("folder: __pycache__\n")
+                    f.write("folder: build\n")
+                    f.write("folder: dist\n")
+                print(f"Created default name patterns file: {self.default_filepath}")
+
+            if os.path.exists(self.default_filepath):
+                with open(self.default_filepath, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"): continue
+                        if line.lower().startswith("file:"):
+                            pattern = line[len("file:"):].strip()
+                            if pattern and pattern not in self.dialog_rule_file_patterns:
+                                self.dialog_rule_file_patterns.append(pattern)
+                        elif line.lower().startswith("folder:"):
+                            pattern = line[len("folder:"):].strip()
+                            if pattern and pattern not in self.dialog_rule_folder_patterns:
+                                self.dialog_rule_folder_patterns.append(pattern)
+            self.dialog_rule_file_patterns.sort()
+            self.dialog_rule_folder_patterns.sort()
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Could not load default name patterns from\n{self.default_filepath}\n\nError: {e}", parent=self)
+        self._rebuild_dialog_name_patterns_list()
+
+
+    def _rebuild_dialog_name_patterns_list(self):
+        """Rebuilds GUI list for name/pattern rules in the EditDefaultsDialog."""
+        for widget in self.dialog_rules_list_frame.winfo_children(): 
+            widget.destroy()
+        row_num = 0
+
+        if self.dialog_rule_file_patterns:
+            ttk.Label(self.dialog_rules_list_frame, text="File Name Patterns:", font=('TkDefaultFont', 9, 'bold')).grid(row=row_num, column=0, columnspan=2, sticky=tk.W, padx=5, pady=(5,2))
+            row_num += 1
+            for pattern_name in self.dialog_rule_file_patterns: 
+                item_f = ttk.Frame(self.dialog_rules_list_frame)
+                item_f.grid(row=row_num, column=0, columnspan=2, sticky=tk.EW, padx=5, pady=1); item_f.columnconfigure(0, weight=1)
+                ttk.Label(item_f, text=f"file: {pattern_name}", anchor=tk.W).grid(row=0, column=0, sticky=tk.EW)
+                ttk.Button(item_f, text="x", width=2, style="Small.TButton", command=lambda p=pattern_name: self._dialog_remove_name_pattern('file', p)).grid(row=0, column=1, sticky=tk.E, padx=(5,0))
+                row_num += 1
+
+        if self.dialog_rule_folder_patterns:
+            ttk.Label(self.dialog_rules_list_frame, text="Folder Name Patterns:", font=('TkDefaultFont', 9, 'bold')).grid(row=row_num, column=0, columnspan=2, sticky=tk.W, padx=5, pady=(10,2))
+            row_num += 1
+            for pattern_name in self.dialog_rule_folder_patterns: 
+                item_f = ttk.Frame(self.dialog_rules_list_frame)
+                item_f.grid(row=row_num, column=0, columnspan=2, sticky=tk.EW, padx=5, pady=1); item_f.columnconfigure(0, weight=1)
+                ttk.Label(item_f, text=f"folder: {pattern_name}", anchor=tk.W).grid(row=0, column=0, sticky=tk.EW)
+                ttk.Button(item_f, text="x", width=2, style="Small.TButton", command=lambda p=pattern_name: self._dialog_remove_name_pattern('folder', p)).grid(row=0, column=1, sticky=tk.E, padx=(5,0))
+                row_num += 1
+
+        if not self.dialog_rule_file_patterns and not self.dialog_rule_folder_patterns:
+            ttk.Label(self.dialog_rules_list_frame, text="No default name patterns defined.", foreground="grey").grid(row=0,column=0,padx=5,pady=5, sticky=tk.W)
+        
+        self.dialog_rules_list_frame.update_idletasks() 
+        self._on_dialog_list_frame_configure() 
+
+    def _dialog_add_name_pattern(self, item_type_str):
+        """Adds a name pattern from the entry field to the dialog's list."""
+        pattern_to_add = self.pattern_entry_var.get().strip()
+        if not pattern_to_add:
+            messagebox.showwarning("Input Missing", "Please enter a file or folder name pattern to add.", parent=self)
+            return
+
+        pattern_added_successfully = False
+        if item_type_str == 'file':
+            if pattern_to_add not in self.dialog_rule_file_patterns:
+                self.dialog_rule_file_patterns.append(pattern_to_add)
+                self.dialog_rule_file_patterns.sort()
+                pattern_added_successfully = True
+        elif item_type_str == 'folder':
+            if pattern_to_add not in self.dialog_rule_folder_patterns:
+                self.dialog_rule_folder_patterns.append(pattern_to_add)
+                self.dialog_rule_folder_patterns.sort()
+                pattern_added_successfully = True
+
+        if pattern_added_successfully:
+            self._rebuild_dialog_name_patterns_list()
+            self.pattern_entry_var.set("") 
+        else: 
+            messagebox.showinfo("Pattern Exists", f"The pattern '{pattern_to_add}' is already in the list for its type.", parent=self)
+
+
+    def _dialog_remove_name_pattern(self, item_type_str, pattern_to_remove):
+        """Removes a name pattern from the dialog's list."""
+        removed_successfully = False
+        if item_type_str == 'file':
+            if pattern_to_remove in self.dialog_rule_file_patterns:
+                self.dialog_rule_file_patterns.remove(pattern_to_remove); removed_successfully = True
+        elif item_type_str == 'folder':
+            if pattern_to_remove in self.dialog_rule_folder_patterns:
+                self.dialog_rule_folder_patterns.remove(pattern_to_remove); removed_successfully = True
+        
+        if removed_successfully:
+            self._rebuild_dialog_name_patterns_list()
+
+    def _save_and_close_name_patterns(self):
+        """Saves the name/pattern rules from dialog state to .scanIgnore.defaults file."""
+        try:
+            with open(self.default_filepath, "w", encoding="utf-8") as f:
+                f.write("# Default files to ignore (name patterns, e.g., *.log, specific_file.tmp)\n")
+                for p_name in sorted(self.dialog_rule_file_patterns): f.write(f"file: {p_name}\n")
+                f.write("\n# Default folders to ignore (name patterns, e.g., .git, node_modules)\n")
+                for p_name in sorted(self.dialog_rule_folder_patterns): f.write(f"folder: {p_name}\n")
+
+            if self.app_instance and hasattr(self.app_instance, '_update_status'): 
+                self.app_instance._update_status(f"Saved changes to default name patterns file: {os.path.basename(self.default_filepath)}", clear_after_ms=3000)
+            self.destroy() 
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Could not save default name patterns to\n{self.default_filepath}\n\nError: {e}", parent=self)
+
+
+# --- Manage Profiles Dialog ---
+class ManageProfilesDialog(Toplevel):
+    def __init__(self, parent, profiles_data, current_active_profile, app_instance, initial_action="load"):
+        super().__init__(parent)
+        self.profiles_dict = profiles_data 
+        self.app_instance_ref = app_instance
+        self.current_active_profile_name = current_active_profile
+
+        self.title("Manage Scan Profiles")
+        self.geometry("450x350")
+        self.transient(parent) 
+        self.grab_set() 
+
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_frame, text="Saved Profiles:", font=('TkDefaultFont', 10, 'bold')).pack(pady=(0,5), anchor=tk.W)
+
+        self.profile_listbox_widget = tk.Listbox(main_frame, height=10, exportselection=False) 
+        self.profile_listbox_widget.pack(fill=tk.BOTH, expand=True, pady=5)
+        self._populate_profile_listbox() 
+
+        buttons_frame = ttk.Frame(main_frame)
+        buttons_frame.pack(fill=tk.X, pady=5)
+
+        self.load_button_widget = ttk.Button(buttons_frame, text="Load Selected", command=self._action_load_selected)
+        self.load_button_widget.pack(side=tk.LEFT, padx=5)
+
+        self.delete_button_widget = ttk.Button(buttons_frame, text="Delete Selected", command=self._action_delete_selected)
+        self.delete_button_widget.pack(side=tk.LEFT, padx=5)
+
+        close_button_widget = ttk.Button(buttons_frame, text="Close", command=self.destroy)
+        close_button_widget.pack(side=tk.RIGHT, padx=5) 
+
+        self._update_button_states() 
+
+        if initial_action == "delete" and self.profiles_dict:
+            self.delete_button_widget.focus_set()
+        elif self.profiles_dict: 
+             self.load_button_widget.focus_set()
+
+        self.profile_listbox_widget.bind("<Double-1>", lambda e: self._action_load_selected()) 
         self.wait_window(self)
 
-    # --- Dialog Canvas/Scrollbar Helpers ---
-    def _on_dialog_frame_configure(self, event=None):
-        self.dialog_ignore_canvas.configure(scrollregion=self.dialog_ignore_canvas.bbox("all"))
-    def _on_dialog_canvas_configure(self, event):
-        self.dialog_ignore_canvas.itemconfig(self.dialog_canvas_window, width=event.width)
-    def _on_dialog_mousewheel(self, event):
-         # Needs to scroll the *dialog's* canvas
-        # Check if the event originated from within the dialog's scrollable area
-        canvas_to_scroll = None
-        widget_under_mouse = event.widget.winfo_containing(event.x_root, event.y_root)
-        if widget_under_mouse:
-            parent_widget = widget_under_mouse
-            while parent_widget is not None:
-                if parent_widget == self.dialog_ignore_canvas:
-                    canvas_to_scroll = self.dialog_ignore_canvas
-                    break
-                if parent_widget == self: # Stop if we reach the Toplevel window itself
-                    break
-                parent_widget = parent_widget.master
 
-        if canvas_to_scroll:
-            if event.num == 5 or event.delta < 0: self.dialog_ignore_canvas.yview_scroll(1, "units")
-            elif event.num == 4 or event.delta > 0: self.dialog_ignore_canvas.yview_scroll(-1, "units")
+    def _populate_profile_listbox(self):
+        self.profile_listbox_widget.delete(0, tk.END) 
+        sorted_profile_names = sorted(self.profiles_dict.keys())
+        
+        selection_to_set_idx = -1 
+
+        for idx, name in enumerate(sorted_profile_names):
+            display_name = name
+            if name == self.current_active_profile_name:
+                display_name += " (Active)"
+                selection_to_set_idx = idx 
+            self.profile_listbox_widget.insert(tk.END, display_name)
+        
+        if selection_to_set_idx != -1: 
+             self.profile_listbox_widget.selection_set(selection_to_set_idx)
+             self.profile_listbox_widget.see(selection_to_set_idx) 
+        elif sorted_profile_names: 
+            self.profile_listbox_widget.selection_set(0)
+            self.profile_listbox_widget.see(0)
 
 
-    # --- Dialog Data Loading ---
-    def _load_initial_defaults(self):
-        try:
-            # Ensure file exists before loading, create if not
-            if not os.path.exists(self.default_filepath):
-                print(f"Default rules file '{self.default_filepath}' not found, creating empty one.")
-                if not create_empty_file(self.default_filepath): # Attempt creation
-                    messagebox.showwarning("File Creation Failed", f"Could not create the default rules file:\n{self.default_filepath}\nProceeding with an empty list.", parent=self)
-                   # Keep dialog open with empty lists even if creation failed
+    def _update_button_states(self):
+        """Enable/disable load/delete buttons based on whether profiles exist."""
+        if not self.profiles_dict: 
+            self.load_button_widget.config(state=tk.DISABLED)
+            self.delete_button_widget.config(state=tk.DISABLED)
 
-            # Now load (will return empty lists if file doesn't exist or is empty/unparseable)
-            self.dialog_ignore_files, self.dialog_ignore_folders = load_ignore_rules(self.default_filepath)
-            self._rebuild_dialog_ignore_list()
-        except Exception as e:
-            messagebox.showerror("Load Error", f"Could not load default rules from\n{self.default_filepath}\n\nError: {e}", parent=self)
-            # Keep dialog open with empty lists
-            self.dialog_ignore_files, self.dialog_ignore_folders = [], []
-            self._rebuild_dialog_ignore_list()
+            if not self.profile_listbox_widget.get(0, tk.END): 
+                 #ttk.Label(self, text="No profiles saved yet.").pack(pady=10) # This might cause issues if self is not suitable for packing
+                 pass # Handled by listbox being empty
+        else:
+            self.load_button_widget.config(state=tk.NORMAL)
+            self.delete_button_widget.config(state=tk.NORMAL)
+
+    def _get_actual_profile_name_from_listbox_selection(self):
+        """Helper to get the true profile name from the listbox's current selection."""
+        selection_indices = self.profile_listbox_widget.curselection()
+        if not selection_indices: return None 
+        
+        selected_display_name = self.profile_listbox_widget.get(selection_indices[0])
+        actual_name = selected_display_name.replace(" (Active)", "").strip() 
+        return actual_name
+
+    def _action_load_selected(self):
+        profile_name_to_load = self._get_actual_profile_name_from_listbox_selection()
+        if profile_name_to_load and self.app_instance_ref:
+            self.app_instance_ref._execute_load_profile(profile_name_to_load)
+            self.destroy() 
+        elif not profile_name_to_load:
+             messagebox.showwarning("No Selection", "Please select a profile to load.", parent=self)
+
+    def _action_delete_selected(self):
+        profile_name_to_delete = self._get_actual_profile_name_from_listbox_selection()
+        if profile_name_to_delete:
+            if messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete profile '{profile_name_to_delete}'?", parent=self):
+                if self.app_instance_ref and self.app_instance_ref._execute_delete_profile(profile_name_to_delete):
+                    self.profiles_dict = self.app_instance_ref.profiles 
+                    self.current_active_profile_name = self.app_instance_ref.active_profile_name 
+                    self._populate_profile_listbox() 
+                    self._update_button_states() 
+                    self.app_instance_ref._update_status(f"Profile '{profile_name_to_delete}' deleted.", clear_after_ms=4000)
+        elif not profile_name_to_delete:
+            messagebox.showwarning("No Selection", "Please select a profile to delete.", parent=self)
 
 
-    # --- Dialog UI Rebuilding ---
-    def _rebuild_dialog_ignore_list(self):
-        # Similar to main app's _rebuild_ignore_list_gui, but uses dialog's widgets and state
-        for widget in self.dialog_ignore_list_frame.winfo_children():
-            widget.destroy()
-
-        row_num = 0
-        # Add file rules
-        if self.dialog_ignore_files:
-            ttk.Label(self.dialog_ignore_list_frame, text="File Rules:", font=('TkDefaultFont', 9, 'bold')).grid(row=row_num, column=0, columnspan=2, sticky=tk.W, padx=5, pady=(5,2))
-            row_num += 1
-            for pattern in self.dialog_ignore_files: # Assumes sorted
-                item_frame = ttk.Frame(self.dialog_ignore_list_frame)
-                item_frame.grid(row=row_num, column=0, columnspan=2, sticky=tk.EW, padx=5, pady=1)
-                item_frame.columnconfigure(0, weight=1)
-                lbl = ttk.Label(item_frame, text=f"file: {pattern}", anchor=tk.W) # Simplified label for dialog
-                lbl.grid(row=0, column=0, sticky=tk.EW)
-                remove_button = ttk.Button(item_frame, text="x", width=2, style="Small.TButton",
-                                           command=lambda p=pattern: self._dialog_remove_item('file', p))
-                remove_button.grid(row=0, column=1, sticky=tk.E, padx=(5, 0))
-                row_num += 1
-
-        # Add folder rules
-        if self.dialog_ignore_folders:
-            ttk.Label(self.dialog_ignore_list_frame, text="Folder Rules:", font=('TkDefaultFont', 9, 'bold')).grid(row=row_num, column=0, columnspan=2, sticky=tk.W, padx=5, pady=(10,2))
-            row_num += 1
-            for pattern in self.dialog_ignore_folders: # Assumes sorted
-                item_frame = ttk.Frame(self.dialog_ignore_list_frame)
-                item_frame.grid(row=row_num, column=0, columnspan=2, sticky=tk.EW, padx=5, pady=1)
-                item_frame.columnconfigure(0, weight=1)
-                lbl = ttk.Label(item_frame, text=f"folder: {pattern}", anchor=tk.W) # Simplified label for dialog
-                lbl.grid(row=0, column=0, sticky=tk.EW)
-                remove_button = ttk.Button(item_frame, text="x", width=2, style="Small.TButton",
-                                           command=lambda p=pattern: self._dialog_remove_item('folder', p))
-                remove_button.grid(row=0, column=1, sticky=tk.E, padx=(5, 0))
-                row_num += 1
-
-        if not self.dialog_ignore_files and not self.dialog_ignore_folders:
-             ttk.Label(self.dialog_ignore_list_frame, text="No default rules defined.", foreground="grey").grid(row=0, column=0, padx=5, pady=5)
-
-        self.dialog_ignore_list_frame.update_idletasks()
-        self._on_dialog_frame_configure()
-
-    # --- Dialog Item Management ---
-    def _dialog_remove_item(self, item_type, pattern):
-        removed = False
-        if item_type == 'file':
-            if pattern in self.dialog_ignore_files:
-                self.dialog_ignore_files.remove(pattern)
-                removed = True
-        elif item_type == 'folder':
-             if pattern in self.dialog_ignore_folders:
-                self.dialog_ignore_folders.remove(pattern)
-                removed = True
-        if removed:
-            self._rebuild_dialog_ignore_list() # Update display
-
-    def _dialog_add_files(self):
-        initial_dir = os.path.dirname(self.default_filepath) or os.path.expanduser("~")
-        filenames = filedialog.askopenfilenames(title="Select File(s) for Default Rule", initialdir=initial_dir, parent=self)
-        if not filenames: return
-
-        added_count = 0
-        for fname in filenames:
-            basename = os.path.basename(fname)
-            if basename and basename not in self.dialog_ignore_files:
-                self.dialog_ignore_files.append(basename)
-                added_count += 1
-        if added_count > 0:
-            self.dialog_ignore_files.sort()
-            self._rebuild_dialog_ignore_list()
-
-    def _dialog_add_folder(self):
-        initial_dir = os.path.dirname(self.default_filepath) or os.path.expanduser("~")
-        foldername = filedialog.askdirectory(title="Select Folder for Default Rule", initialdir=initial_dir, parent=self)
-        if not foldername: return
-
-        basename = os.path.basename(foldername)
-        if basename and basename not in self.dialog_ignore_folders:
-            self.dialog_ignore_folders.append(basename)
-            self.dialog_ignore_folders.sort()
-            self._rebuild_dialog_ignore_list()
-
-    # --- Dialog Save Action ---
-    def _save_and_close(self):
-        try:
-            save_ignore_rules(self.default_filepath, self.dialog_ignore_files, self.dialog_ignore_folders)
-
-            # Use the stored self.app_instance to update status
-            if self.app_instance and hasattr(self.app_instance, '_update_status'):
-                self.app_instance._update_status(f"Saved changes to {os.path.basename(self.default_filepath)}", clear_after_ms=3000)
-
-            self.destroy() # Close the dialog
-        except Exception as e:
-            messagebox.showerror("Save Error", f"Could not save default rules to\n{self.default_filepath}\n\nError: {e}", parent=self)
-            # Keep dialog open on error
-
-# --- ToolTip Class (Moved outside CodeScannerApp) ---
+# --- ToolTip Class (Standard, no changes needed from previous context) ---
 class ToolTip:
-    """ Standard Tooltip implementation """
     def __init__(self, widget, text):
         self.widget = widget
         self.text = text
-        self.tooltip = None
-        self.id = None # Add id attribute for schedule/unschedule
-        self.x = self.y = 0 # Store position
-        self.widget.bind("<Enter>", self.enter)
-        self.widget.bind("<Leave>", self.leave)
-        self.widget.bind("<ButtonPress>", self.leave) # Hide on click too
+        self.tooltip_window = None 
+        self.id_after = None       
+        self.widget.bind("<Enter>", self.on_enter)
+        self.widget.bind("<Leave>", self.on_leave)
+        self.widget.bind("<ButtonPress>", self.on_leave) 
 
-    def enter(self, event=None):
-        # Small delay before showing
-        self.schedule()
+    def on_enter(self, event=None):
+        self.schedule_tooltip()
 
-    def leave(self, event=None):
-        self.unschedule()
-        self.hidetip()
+    def on_leave(self, event=None):
+        self.cancel_scheduled_tooltip()
+        self.hide_tooltip()
 
-    def schedule(self):
-        self.unschedule()
-        self.id = self.widget.after(500, self.showtip) # 500ms delay
+    def schedule_tooltip(self):
+        self.cancel_scheduled_tooltip() 
+        self.id_after = self.widget.after(700, self.show_tooltip) 
 
-    def unschedule(self):
-        # Use getattr to safely access id
-        scheduled_id = getattr(self, 'id', None)
-        if scheduled_id:
-            self.widget.after_cancel(scheduled_id)
-        self.id = None
+    def cancel_scheduled_tooltip(self):
+        if self.id_after:
+            self.widget.after_cancel(self.id_after)
+            self.id_after = None
 
-    def showtip(self):
-        if self.tooltip: return # Already shown
+    def show_tooltip(self):
+        if self.tooltip_window or not self.text: return 
 
-        # Get widget position relative to screen
-        x = self.widget.winfo_rootx() + 20 # Offset slightly from mouse
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5 # Below widget
+        x_root = self.widget.winfo_rootx() + 20 
+        y_root = self.widget.winfo_rooty() + self.widget.winfo_height() + 5 
 
-        self.tooltip = tk.Toplevel(self.widget)
-        self.tooltip.wm_overrideredirect(True) # No window decorations
-        self.tooltip.wm_geometry(f"+{int(x)}+{int(y)}")
+        self.tooltip_window = tk.Toplevel(self.widget)
+        self.tooltip_window.wm_overrideredirect(True) 
+        self.tooltip_window.wm_geometry(f"+{int(x_root)}+{int(y_root)}")
 
-        label = tk.Label(self.tooltip, text=self.text, justify='left',
+        label = tk.Label(self.tooltip_window, text=self.text, justify='left',
                          background="#ffffe0", relief='solid', borderwidth=1,
-                         wraplength=300, # Wrap long tooltips
+                         wraplength=350, 
                          font=("tahoma", "8", "normal"))
         label.pack(ipadx=2, ipady=2)
 
-        # Basic screen boundary adjustment (simplified)
-        self.tooltip.update_idletasks()
-        tip_width = self.tooltip.winfo_width()
-        tip_height = self.tooltip.winfo_height()
+        self.tooltip_window.update_idletasks() 
+        tip_width = self.tooltip_window.winfo_width()
+        tip_height = self.tooltip_window.winfo_height()
         screen_width = self.widget.winfo_screenwidth()
         screen_height = self.widget.winfo_screenheight()
 
-        if x + tip_width > screen_width:
-             x = screen_width - tip_width - 5
-        if x < 0: x= 5
+        if x_root + tip_width > screen_width: 
+            x_root = screen_width - tip_width - 5 
+        if x_root < 0: x_root = 5 
 
-        if y + tip_height > screen_height:
-             y = self.widget.winfo_rooty() - tip_height - 5 # Try above
-        if y < 0: y = 5
+        if y_root + tip_height > screen_height: 
+            y_root = self.widget.winfo_rooty() - tip_height - 5 
+        if y_root < 0: y_root = 5 
 
-        self.tooltip.wm_geometry(f"+{int(x)}+{int(y)}")
+        self.tooltip_window.wm_geometry(f"+{int(x_root)}+{int(y_root)}") 
 
-
-    def hidetip(self):
-        if self.tooltip:
-            try: # Add try-except in case tooltip is already destroyed
-                 self.tooltip.destroy()
+    def hide_tooltip(self):
+        if self.tooltip_window:
+            try:
+                self.tooltip_window.destroy()
             except tk.TclError:
-                 pass
-            self.tooltip = None
+                pass 
+            self.tooltip_window = None
 
 # --- Main Execution ---
 if __name__ == "__main__":
     root = tk.Tk()
-    # Load settings once at the start if needed elsewhere, though app loads its own
-    settings = load_settings()
     app = CodeScannerApp(root)
-    # Set the app instance name for potential access from dialog (already done via constructor)
     root.mainloop()

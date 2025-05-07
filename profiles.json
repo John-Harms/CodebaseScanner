@@ -1,0 +1,11 @@
+{
+    "profiles": {
+        "Frontend": {
+            "scan_directory": "C:\\Users\\spycy\\OneDrive\\Desktop\\Projects\\MedChart\\Charting-Program\\Frontend\\individual-manager-app",
+            "save_filepath": "C:\\Users\\spycy\\Downloads\\FrontendProgramCodebaseContext.txt",
+            "rules_filepath": "C:\\Users\\spycy\\OneDrive\\Desktop\\Projects\\MedChart\\Charting-Program\\Frontend\\individual-manager-app\\.scanIgnore",
+            "filter_mode": "whitelist"
+        }
+    },
+    "last_active_profile_name": "Frontend"
+}
