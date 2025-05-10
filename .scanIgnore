@@ -1,14 +1,4 @@
-# Files to ignore/include
-file: .git
-file: CodebaseScannerApp.exe
-file: CodebaseScannerApp.spec
-file: eslint.config.js
-file: package-lock.json
+# Files to ignore/include (full paths)
+file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\CodebaseScanner.py
 
-# Folders to ignore/include
-folder: .git
-folder: .venv
-folder: build
-folder: dist
-folder: dist-ssr
-folder: node_modules
+# Folders to ignore/include (full paths)
