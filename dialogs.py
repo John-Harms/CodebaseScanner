@@ -251,21 +251,40 @@ class ManageProfilesDialog(Toplevel):
         self.current_active_profile_name = current_active_profile # Name of the currently active profile
 
         self.title("Manage Scan Profiles")
-        self.geometry("450x350")
+        self.geometry("450x400") # Increased height for search box
         self.transient(parent) # Show above parent
         self.grab_set() # Modal behavior
 
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame.rowconfigure(2, weight=1) # Allow listbox to expand
+        main_frame.columnconfigure(0, weight=1)
 
-        ttk.Label(main_frame, text="Saved Profiles:", font=('TkDefaultFont', 10, 'bold')).pack(pady=(0,5), anchor=tk.W)
+        # --- Search/Filter UI ---
+        search_frame = ttk.Frame(main_frame)
+        search_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        search_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(search_frame, text="Filter:").grid(row=0, column=0, padx=(0, 5))
+        self.search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
+        search_entry.grid(row=0, column=1, sticky="ew")
+        self.search_var.trace_add("write", self._on_search_change)
+
+        ttk.Label(main_frame, text="Saved Profiles:", font=('TkDefaultFont', 10, 'bold')).grid(row=1, column=0, pady=(0,5), sticky=tk.W)
 
         self.profile_listbox_widget = tk.Listbox(main_frame, height=10, exportselection=False)
-        self.profile_listbox_widget.pack(fill=tk.BOTH, expand=True, pady=5)
+        self.profile_listbox_widget.grid(row=2, column=0, sticky="nsew", pady=5)
+        
+        # --- Listbox Scrollbar ---
+        listbox_scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=self.profile_listbox_widget.yview)
+        listbox_scrollbar.grid(row=2, column=1, sticky="ns", pady=5)
+        self.profile_listbox_widget.config(yscrollcommand=listbox_scrollbar.set)
+        
         self._populate_profile_listbox() # Initial population
 
         buttons_frame = ttk.Frame(main_frame)
-        buttons_frame.pack(fill=tk.X, pady=5) # Fill horizontally for button alignment
+        buttons_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(5,0))
 
         self.load_button_widget = ttk.Button(buttons_frame, text="Load Selected", command=self._action_load_selected)
         self.load_button_widget.pack(side=tk.LEFT, padx=5)
@@ -288,37 +307,45 @@ class ManageProfilesDialog(Toplevel):
         self.profile_listbox_widget.bind("<Double-1>", lambda e: self._action_load_selected())
         self.wait_window(self) # Wait for dialog to close
 
+    def _on_search_change(self, *args):
+        """Called when the user types in the search/filter entry box."""
+        self._populate_profile_listbox()
+        self._update_button_states()
 
     def _populate_profile_listbox(self):
+        """Populates the listbox with profile names, applying the current search filter."""
+        search_term = self.search_var.get().lower()
         self.profile_listbox_widget.delete(0, tk.END) # Clear existing items
-        # Sort profile names alphabetically for consistent display
-        sorted_profile_names = sorted(self.profiles_dict.keys())
         
-        selection_to_set_idx = -1 # To re-select the active profile
+        # Get and filter profile names based on the search term
+        all_profile_names = sorted(self.profiles_dict.keys())
+        filtered_names = [name for name in all_profile_names if search_term in name.lower()]
 
-        for idx, name in enumerate(sorted_profile_names):
+        selection_to_set_idx = -1 # To re-select the active profile if it's in the filtered list
+
+        for idx, name in enumerate(filtered_names):
             display_name = name
             if name == self.current_active_profile_name: # Mark the active profile
                 display_name += " (Active)"
                 selection_to_set_idx = idx
             self.profile_listbox_widget.insert(tk.END, display_name)
         
-        # If an active profile was found, select it. Otherwise, select the first if list is not empty.
+        # If an active profile was found in the filtered list, select it.
+        # Otherwise, select the first item if the filtered list is not empty.
         if selection_to_set_idx != -1:
              self.profile_listbox_widget.selection_set(selection_to_set_idx)
              self.profile_listbox_widget.see(selection_to_set_idx) # Ensure it's visible
-        elif sorted_profile_names: # If no active profile, but list has items, select first
+        elif filtered_names: # If no active profile, but list has items, select first
             self.profile_listbox_widget.selection_set(0)
             self.profile_listbox_widget.see(0)
 
 
     def _update_button_states(self):
-        # Disable load/delete if no profiles exist or none is selected
-        # curselection() returns a tuple of selected indices, check if it's empty
+        # Disable load/delete if no profiles exist in the filtered list or none is selected
         has_selection = bool(self.profile_listbox_widget.curselection())
-        has_profiles = bool(self.profiles_dict)
+        has_profiles_in_list = self.profile_listbox_widget.size() > 0
 
-        if has_profiles and has_selection:
+        if has_profiles_in_list and has_selection:
             self.load_button_widget.config(state=tk.NORMAL)
             self.delete_button_widget.config(state=tk.NORMAL)
         else:
@@ -369,7 +396,7 @@ class ManageProfilesDialog(Toplevel):
                         # Refresh local state from app instance after deletion
                         self.profiles_dict = self.app_instance_ref.profiles 
                         self.current_active_profile_name = self.app_instance_ref.active_profile_name
-                        self._populate_profile_listbox() # Refresh the listbox
+                        self._populate_profile_listbox() # Refresh the listbox with the current filter
                         self._update_button_states() # Update button states (e.g., if list becomes empty)
                         # Status update is handled by _execute_delete_profile in the main app
         elif not profile_name_to_delete: # No profile selected

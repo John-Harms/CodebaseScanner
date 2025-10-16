@@ -31,7 +31,7 @@ class CodeScannerApp:
         self.filter_mode_var = tk.StringVar(value=app_config.FILTER_BLACKLIST)
         self.generate_directory_tree_var = tk.BooleanVar(value=True)
 
-        self.rules_files = []  # Full path rules for files
+        self.rules_files = [] # Full path rules for files
         self.rules_folders = [] # Full path rules for folders
         self.rules_dirty = False # Tracks unsaved changes to the current rules list
 
@@ -47,6 +47,7 @@ class CodeScannerApp:
         self.profiles, self.last_active_profile_name = profile_handler.load_profiles(app_config.PROFILES_PATH)
         self.active_profile_name = None # Will be set by _configure_fields_from_initial_profile
 
+        
         self._configure_fields_from_initial_profile() # Applies last active profile or defaults
 
         self._setup_ui()
@@ -60,13 +61,14 @@ class CodeScannerApp:
 
     def _setup_ui(self):
         menubar = tk.Menu(self.root)
-        profile_menu = tk.Menu(menubar, tearoff=0)
-        profile_menu.add_command(label="Save Profile...", command=self._save_profile_dialog)
-        profile_menu.add_command(label="Load Profile...", command=self._load_profile_dialog) # Opens manage dialog
-        profile_menu.add_command(label="Delete Profile...", command=self._delete_profile_dialog) # Opens manage dialog
-        profile_menu.add_separator()
-        profile_menu.add_command(label="Manage Profiles...", command=self._manage_profiles_dialog)
-        menubar.add_cascade(label="Profiles", menu=profile_menu)
+        self.profile_menu = tk.Menu(menubar, tearoff=0)
+        self.profile_menu.add_command(label="Update Current Profile", command=self._update_current_profile)
+        self.profile_menu.add_command(label="Save Profile As...", command=self._save_profile_dialog)
+        self.profile_menu.add_command(label="Load Profile...", command=self._load_profile_dialog) # Opens manage dialog
+        self.profile_menu.add_command(label="Delete Profile...", command=self._delete_profile_dialog) # Opens manage dialog
+        self.profile_menu.add_separator()
+        self.profile_menu.add_command(label="Manage Profiles...", command=self._manage_profiles_dialog)
+        menubar.add_cascade(label="Profiles", menu=self.profile_menu)
         self.root.config(menu=menubar)
 
         main_frame = ttk.Frame(self.root, padding="10")
@@ -143,6 +145,9 @@ class CodeScannerApp:
         
         # Initial load of rules from file if path is set
         self._load_rules_from_file()
+        
+        # Initial state for profile menu
+        self._update_profile_menu_state()
 
         run_button = ttk.Button(main_frame, text="Run Scan", command=self._run_scan, style="Accent.TButton")
         run_button.grid(row=current_row, column=0, columnspan=3, pady=10)
@@ -250,6 +255,8 @@ class CodeScannerApp:
         
         self.directory_tree_blacklist_dirty = False
         self.rules_dirty = False
+        if hasattr(self, 'profile_menu'): # Check if UI is initialized
+            self._update_profile_menu_state()
 
     def _update_status(self, message, clear_after_ms=None):
         self.status_text.set(message)
@@ -278,9 +285,83 @@ class CodeScannerApp:
 
         self.root.title(title)
 
+    def _update_profile_menu_state(self):
+        """Enables or disables the 'Update Current Profile' menu item based on whether a profile is active."""
+        if hasattr(self, 'profile_menu'):
+            state = tk.NORMAL if self.active_profile_name else tk.DISABLED
+            self.profile_menu.entryconfig("Update Current Profile", state=state)
+
+    def _update_current_profile(self):
+        """Saves the current application settings to the currently active profile, overwriting it."""
+        if not self.active_profile_name:
+            self._update_status("No active profile to update.", clear_after_ms=3000)
+            return
+
+        # Confirm with the user before overwriting the profile
+        if not messagebox.askyesno("Confirm Update", f"Update profile '{self.active_profile_name}' with the current settings?", parent=self.root):
+            self._update_status("Profile update cancelled.", clear_after_ms=3000)
+            return
+        
+        # Gather current settings from the UI
+        scan_dir = self.scan_directory.get()
+        save_fp = self.save_filepath.get()
+        rules_fp = self.current_rules_filepath.get()
+        filter_mode = self.filter_mode_var.get()
+        current_tree_blacklist = list(self.directory_tree_blacklist)
+        current_generate_tree_setting = self.generate_directory_tree_var.get()
+
+        # Validation checks
+        if not scan_dir or not os.path.isdir(scan_dir):
+            messagebox.showwarning("Incomplete Configuration", "Scan directory must be a valid directory.", parent=self.root); return
+        if not save_fp:
+             messagebox.showwarning("Incomplete Configuration", "Save output path must be set.", parent=self.root); return
+        
+        # Handle unsaved changes in the rules list before saving the profile
+        if self.rules_dirty and rules_fp:
+            save_rules_choice = messagebox.askyesnocancel("Unsaved Rules", f"The current scan rules for '{os.path.basename(rules_fp)}' have unsaved changes. Save them to this rules file before updating the profile?", parent=self.root)
+            if save_rules_choice is True: # User clicked "Yes"
+                self._save_rules_list_changes()
+                if self.rules_dirty: # Check if the save operation failed
+                    messagebox.showerror("Profile Update Halted", "Failed to save the scan rules. Profile not updated.", parent=self.root)
+                    return
+            elif save_rules_choice is None: # User clicked "Cancel"
+                self._update_status("Profile update cancelled.", clear_after_ms=3000)
+                return
+            # If user clicked "No", proceed to save the profile with the in-memory (unsaved) rules.
+
+        # The profile name is the currently active one
+        profile_name = self.active_profile_name
+        
+        # Update the profile data in the main profiles dictionary
+        self.profiles[profile_name] = {
+            "scan_directory": os.path.normpath(scan_dir),
+            "save_filepath": os.path.normpath(save_fp),
+            "rules_filepath": os.path.normpath(rules_fp) if rules_fp else "",
+            "filter_mode": filter_mode,
+            "directory_tree_blacklist": current_tree_blacklist,
+            "generate_directory_tree": current_generate_tree_setting
+        }
+        self.last_active_profile_name = profile_name
+
+        try:
+            # Save all profiles and the last active profile name to the JSON file
+            profile_handler.save_profiles(self.profiles, self.last_active_profile_name, app_config.PROFILES_PATH)
+            
+            # Since the profile is now saved, clear the dirty flags
+            self.directory_tree_blacklist_dirty = False
+            self.rules_dirty = False # The profile reflects the UI state, so it is "saved" from a profile perspective.
+            
+            self._update_status(f"Profile '{profile_name}' updated successfully.", clear_after_ms=4000)
+        except Exception as e:
+            messagebox.showerror("Profile Save Error", f"Could not save profile update: {e}", parent=self.root)
+            self._update_status(f"Error updating profile '{profile_name}'.", clear_after_ms=5000)
+            return
+
+        # Update the window title to remove the dirty indicator (*)
+        self._update_window_title()
 
     def _save_profile_dialog(self):
-        profile_name = simpledialog.askstring("Save Profile", "Enter profile name:", parent=self.root)
+        profile_name = simpledialog.askstring("Save Profile As", "Enter a new profile name:", parent=self.root)
         if not profile_name:
             self._update_status("Save profile cancelled.", clear_after_ms=3000)
             return
@@ -308,11 +389,16 @@ class CodeScannerApp:
              messagebox.showwarning("Incomplete Configuration", "Save output path must be set.", parent=self.root); return
         
         if self.rules_dirty and rules_fp:
-            if messagebox.askyesnocancel("Unsaved Rules", f"The current scan rules for '{os.path.basename(rules_fp)}' have unsaved changes. Save them to this rules file before saving the profile?", parent=self.root) is True:
+            # If user cancels this, we should not proceed to save the profile
+            save_rules_choice = messagebox.askyesnocancel("Unsaved Rules", f"The current scan rules for '{os.path.basename(rules_fp)}' have unsaved changes. Save them to this rules file before saving the profile?", parent=self.root)
+            if save_rules_choice is True: # Yes
                 self._save_rules_list_changes()
                 if self.rules_dirty:
                     messagebox.showerror("Profile Save Halted", "Failed to save the scan rules. Profile not saved.", parent=self.root)
                     return
+            elif save_rules_choice is None or save_rules_choice is False: # Cancel or No
+                 self._update_status("Save profile cancelled due to unsaved rule changes.", clear_after_ms=4000)
+                 return
         
         self.profiles[profile_name] = {
             "scan_directory": os.path.normpath(scan_dir),
@@ -325,8 +411,10 @@ class CodeScannerApp:
         self.last_active_profile_name = profile_name
         self.active_profile_name = profile_name
         
-        self.directory_tree_blacklist_dirty = False 
-        # rules_dirty state is independent of profile saving, unless rules were just saved.
+        self.directory_tree_blacklist_dirty = False
+        # If rules were required to be saved, self.rules_dirty is now False.
+        self.rules_dirty = False
+        
         try:
             profile_handler.save_profiles(self.profiles, self.last_active_profile_name, app_config.PROFILES_PATH)
             self._update_status(f"Profile '{profile_name}' saved.", clear_after_ms=3000)
@@ -335,6 +423,7 @@ class CodeScannerApp:
             self._update_status(f"Error saving profile '{profile_name}'.", clear_after_ms=5000)
 
         self._update_window_title()
+        self._update_profile_menu_state()
 
 
     def _apply_profile_settings(self, profile_name, persist_last_active=False):
@@ -343,6 +432,7 @@ class CodeScannerApp:
             messagebox.showerror("Error", f"Profile '{profile_name}' not found.", parent=self.root)
             self.active_profile_name = None
             self._update_window_title()
+            self._update_profile_menu_state()
             return False
 
         new_rules_filepath_from_profile = profile_data.get("rules_filepath", "")
@@ -385,10 +475,11 @@ class CodeScannerApp:
             try:
                 profile_handler.save_profiles(self.profiles, self.last_active_profile_name, app_config.PROFILES_PATH)
             except Exception as e:
-                messagebox.showerror("Profile Save Error", f"Could not persist last active profile setting: {e}", parent=self.root)
+                 messagebox.showerror("Profile Save Error", f"Could not persist last active profile setting: {e}", parent=self.root)
 
         self._update_window_title()
         self._on_filter_mode_change(update_status=False)
+        self._update_profile_menu_state()
         return True
 
 
@@ -445,6 +536,7 @@ class CodeScannerApp:
                  messagebox.showerror("Profile Save Error", f"Could not save profile changes after deletion: {e}", parent=self.root)
             
             self._update_window_title()
+            self._update_profile_menu_state()
             if not was_active_profile:
                  self._update_status(f"Profile '{profile_name_to_delete}' deleted.", clear_after_ms=3000)
             return True
@@ -804,7 +896,7 @@ class CodeScannerApp:
                 if used_rules_file_display_path:
                     rules_source_display = f"`{os.path.basename(used_rules_file_display_path)}` (from `{used_rules_file_display_path}`)"
                     if self.rules_dirty :
-                         rules_source_display += " - with unsaved modifications in GUI"
+                        rules_source_display += " - with unsaved modifications in GUI"
                 else:
                     rules_source_display = "`Current GUI rules (No file or unsaved changes to a file)`"
                 output_file.write(f"**Rules From:** {rules_source_display}\n\n")
@@ -821,6 +913,7 @@ class CodeScannerApp:
                     filter_mode_val, level=0, status_callback=thread_safe_status_update,
                     whitelisted_ancestor_folders=initial_whitelisted_ancestors
                 )
+        
             
             def on_scan_complete_actions():
                 self._update_status(f"Scan complete. Output saved to: {save_path_norm}", clear_after_ms=10000)
