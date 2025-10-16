@@ -1,12 +1,3 @@
-# Files to ignore
-file: .git
-file: eslint.config.js
-file: package-lock.json
+# Default files to ignore (name patterns, e.g., *.log, specific_file.tmp)
 
-# Folders to ignore
-folder: .git
-folder: .venv
-folder: build
-folder: dist
-folder: dist-ssr
-folder: node_modules
+# Default folders to ignore (name patterns, e.g., .git, node_modules)
