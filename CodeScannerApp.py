@@ -19,13 +19,15 @@ from dialogs import EditDefaultsDialog, ManageProfilesDialog
 
 
 class CodeScannerApp:
+   
     def __init__(self, root):
         self.root = root
         self.root.title("Codebase Scanner")
 
         self.scan_directory = tk.StringVar()
         self.save_filepath = tk.StringVar()
-        self.current_rules_filepath = tk.StringVar()
+        self.rules_directory = tk.StringVar() # Directory for rules file
+        self.current_rules_filepath = tk.StringVar() # Specific .scanIgnore file path
         self.status_text = tk.StringVar()
         self.status_text.set("Initializing...")
         self.filter_mode_var = tk.StringVar(value=app_config.FILTER_BLACKLIST)
@@ -76,6 +78,7 @@ class CodeScannerApp:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1) # Allow main_frame to expand
 
+        
         current_row = 0
 
         # Scan Directory
@@ -94,13 +97,13 @@ class CodeScannerApp:
         save_button.grid(row=current_row, column=2, sticky=tk.E, padx=5, pady=2)
         current_row += 1
 
-        # Rules File
-        ttk.Label(main_frame, text="Rules File:").grid(row=current_row, column=0, sticky=tk.W, pady=2)
-        rules_file_entry = ttk.Entry(main_frame, textvariable=self.current_rules_filepath, width=60, state='readonly')
-        rules_file_entry.grid(row=current_row, column=1, sticky=(tk.W, tk.E), padx=5, pady=2)
-        rules_file_button = ttk.Button(main_frame, text="Browse...", command=self._browse_rules_file)
-        rules_file_button.grid(row=current_row, column=2, sticky=tk.E, padx=5, pady=2)
-        ToolTip(rules_file_button, "Select or create the path-based rules file (.scanIgnore, etc.)")
+        # Rules Directory
+        ttk.Label(main_frame, text="Rules Directory:").grid(row=current_row, column=0, sticky=tk.W, pady=2)
+        rules_dir_entry = ttk.Entry(main_frame, textvariable=self.rules_directory, width=60, state='readonly')
+        rules_dir_entry.grid(row=current_row, column=1, sticky=(tk.W, tk.E), padx=5, pady=2)
+        rules_dir_button = ttk.Button(main_frame, text="Browse...", command=self._browse_rules_directory)
+        rules_dir_button.grid(row=current_row, column=2, sticky=tk.E, padx=5, pady=2)
+        ToolTip(rules_dir_button, "Select a directory. The app will find or create a .scanIgnore file within it.")
         current_row += 1
         
         # --- Buttons Below Rules File (Moved from old UI) ---
@@ -111,7 +114,7 @@ class CodeScannerApp:
         ToolTip(edit_defaults_button, f"Open editor for {os.path.basename(app_config.DEFAULT_IGNORE_PATH)} which uses name-based patterns (not full paths).")
         save_rules_button = ttk.Button(rules_buttons_frame, text="Save Rules List", command=self._save_rules_list_changes)
         save_rules_button.pack(side=tk.LEFT, padx=5)
-        ToolTip(save_rules_button, "Save current path-based rules to the selected rules file.")
+        ToolTip(save_rules_button, "Save current path-based rules to the .scanIgnore file in the selected rules directory.")
         current_row += 1
 
         # Filter Mode and Directory Tree Toggle Frame
@@ -139,6 +142,7 @@ class CodeScannerApp:
         ToolTip(self.generate_tree_check, "Check to include a directory tree at the start of the scan output file.")
         current_row += 1
 
+        
         # --- New Tree Explorer UI ---
         self._setup_tree_explorer_ui(main_frame, current_row)
         current_row += 1
@@ -149,6 +153,7 @@ class CodeScannerApp:
         # Initial state for profile menu
         self._update_profile_menu_state()
 
+        
         run_button = ttk.Button(main_frame, text="Run Scan", command=self._run_scan, style="Accent.TButton")
         run_button.grid(row=current_row, column=0, columnspan=3, pady=10)
         
@@ -171,6 +176,7 @@ class CodeScannerApp:
         tree_container.columnconfigure(0, weight=1)
         tree_container.rowconfigure(1, weight=1)
 
+        
         controls_frame = ttk.Frame(tree_container)
         controls_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 5))
 
@@ -237,6 +243,7 @@ class CodeScannerApp:
             if profile_data:
                 self.scan_directory.set(profile_data.get("scan_directory", ""))
                 self.save_filepath.set(profile_data.get("save_filepath", os.path.join(os.path.expanduser("~"), app_config.DEFAULT_OUTPUT_FILENAME)))
+                self.rules_directory.set(profile_data.get("rules_directory", ""))
                 self.current_rules_filepath.set(profile_data.get("rules_filepath", ""))
                 self.filter_mode_var.set(profile_data.get("filter_mode", app_config.FILTER_BLACKLIST))
                 self.directory_tree_blacklist = list(profile_data.get("directory_tree_blacklist", []))
@@ -247,6 +254,7 @@ class CodeScannerApp:
         if not configured_successfully:
             self.scan_directory.set("")
             self.save_filepath.set(os.path.join(os.path.expanduser("~"), app_config.DEFAULT_OUTPUT_FILENAME))
+            self.rules_directory.set("")
             self.current_rules_filepath.set("")
             self.filter_mode_var.set(app_config.FILTER_BLACKLIST)
             self.directory_tree_blacklist = []
@@ -305,6 +313,7 @@ class CodeScannerApp:
         # Gather current settings from the UI
         scan_dir = self.scan_directory.get()
         save_fp = self.save_filepath.get()
+        rules_dir = self.rules_directory.get()
         rules_fp = self.current_rules_filepath.get()
         filter_mode = self.filter_mode_var.get()
         current_tree_blacklist = list(self.directory_tree_blacklist)
@@ -328,7 +337,6 @@ class CodeScannerApp:
                 self._update_status("Profile update cancelled.", clear_after_ms=3000)
                 return
             # If user clicked "No", proceed to save the profile with the in-memory (unsaved) rules.
-
         # The profile name is the currently active one
         profile_name = self.active_profile_name
         
@@ -336,6 +344,7 @@ class CodeScannerApp:
         self.profiles[profile_name] = {
             "scan_directory": os.path.normpath(scan_dir),
             "save_filepath": os.path.normpath(save_fp),
+            "rules_directory": os.path.normpath(rules_dir) if rules_dir else "",
             "rules_filepath": os.path.normpath(rules_fp) if rules_fp else "",
             "filter_mode": filter_mode,
             "directory_tree_blacklist": current_tree_blacklist,
@@ -350,7 +359,6 @@ class CodeScannerApp:
             # Since the profile is now saved, clear the dirty flags
             self.directory_tree_blacklist_dirty = False
             self.rules_dirty = False # The profile reflects the UI state, so it is "saved" from a profile perspective.
-            
             self._update_status(f"Profile '{profile_name}' updated successfully.", clear_after_ms=4000)
         except Exception as e:
             messagebox.showerror("Profile Save Error", f"Could not save profile update: {e}", parent=self.root)
@@ -378,6 +386,7 @@ class CodeScannerApp:
 
         scan_dir = self.scan_directory.get()
         save_fp = self.save_filepath.get()
+        rules_dir = self.rules_directory.get()
         rules_fp = self.current_rules_filepath.get()
         filter_mode = self.filter_mode_var.get()
         current_tree_blacklist = list(self.directory_tree_blacklist)
@@ -403,6 +412,7 @@ class CodeScannerApp:
         self.profiles[profile_name] = {
             "scan_directory": os.path.normpath(scan_dir),
             "save_filepath": os.path.normpath(save_fp),
+            "rules_directory": os.path.normpath(rules_dir) if rules_dir else "",
             "rules_filepath": os.path.normpath(rules_fp) if rules_fp else "",
             "filter_mode": filter_mode,
             "directory_tree_blacklist": current_tree_blacklist,
@@ -436,6 +446,7 @@ class CodeScannerApp:
             return False
 
         new_rules_filepath_from_profile = profile_data.get("rules_filepath", "")
+        new_rules_directory_from_profile = profile_data.get("rules_directory", "")
         normalized_new_rules_path = os.path.normpath(new_rules_filepath_from_profile) if new_rules_filepath_from_profile else ""
         
         current_gui_rules_path_val = self.current_rules_filepath.get()
@@ -461,12 +472,20 @@ class CodeScannerApp:
         
         self.directory_tree_blacklist_dirty = False
         
+        self.rules_directory.set(new_rules_directory_from_profile)
         self.current_rules_filepath.set(new_rules_filepath_from_profile)
         self._load_rules_from_file() # This loads rules and sets rules_dirty to False
 
         if self.tree:
-            self.tree.delete(*self.tree.get_children())
-            self._update_status("Profile loaded. Refresh the directory tree to see rule associations.", clear_after_ms=5000)
+            # Auto-refresh tree view if the profile's scan directory is valid
+            scan_dir_from_profile = self.scan_directory.get()
+            if scan_dir_from_profile and os.path.isdir(scan_dir_from_profile):
+                self._populate_tree_view()
+            else:
+                # Otherwise, just clear the tree view
+                self.tree.delete(*self.tree.get_children())
+                self.tree_item_paths.clear() # Important to clear this map as well
+                self._update_status("Profile loaded. Scan directory not set or is invalid.", clear_after_ms=5000)
 
 
         self.active_profile_name = profile_name
@@ -519,12 +538,13 @@ class CodeScannerApp:
                 self.active_profile_name = None
                 self.scan_directory.set("")
                 self.save_filepath.set(os.path.join(os.path.expanduser("~"), app_config.DEFAULT_OUTPUT_FILENAME))
+                self.rules_directory.set("")
                 self.current_rules_filepath.set("")
                 self.rules_files, self.rules_folders = [], []
                 self.filter_mode_var.set(app_config.FILTER_BLACKLIST)
                 self.directory_tree_blacklist = []
                 self.generate_directory_tree_var.set(True)
-        
+                
                 if self.tree: self.tree.delete(*self.tree.get_children())
                 self.directory_tree_blacklist_dirty = False
                 self.rules_dirty = False
@@ -548,7 +568,7 @@ class CodeScannerApp:
         directory = filedialog.askdirectory(title="Select Directory to Scan", initialdir=initial_dir, parent=self.root)
         if directory:
             self.scan_directory.set(os.path.normpath(directory))
-            self._update_status("Scan directory selected. You can now load it into the file explorer.")
+            self._populate_tree_view() # Auto-refresh tree view on new directory selection
         else:
             self._update_status("Scan directory selection cancelled.")
 
@@ -581,7 +601,7 @@ class CodeScannerApp:
             self.save_filepath.set(os.path.normpath(filepath))
             self._update_status("Save location selected.")
         else:
-            self.save_filepath.set(current_save_path)
+            self.save_filepath.set(current_save_path) # Restore original path if cancelled
             self._update_status("Save location selection cancelled.")
 
     def _load_rules_from_file(self):
@@ -591,6 +611,7 @@ class CodeScannerApp:
             self.rules_files, self.rules_folders = [], []
             self.rules_dirty = False
             if self.tree: self._update_all_tree_visuals()
+            self._update_window_title() # Clear dirty star if rules were reset
             return
             
         normalized_filepath = os.path.normpath(filepath)
@@ -602,68 +623,136 @@ class CodeScannerApp:
             except Exception as e:
                 messagebox.showerror("Load Error", f"Could not load scan rules from {os.path.basename(filepath)}:\n{e}", parent=self.root)
                 self.rules_files, self.rules_folders = [], []
-        else: # File doesn't exist, treat as empty
+        else: # File doesn't exist (e.g., path set but file deleted)
             self.rules_files, self.rules_folders = [], []
         
-        self.rules_dirty = False
+        self.rules_dirty = False # Loading always resets dirty flag
         if self.tree: self._update_all_tree_visuals()
         self._update_window_title()
 
-    def _browse_rules_file(self):
-        initial_dir_browse = os.path.dirname(self.current_rules_filepath.get()) or \
-                             self.scan_directory.get() or \
-                             os.path.expanduser("~")
+    def _browse_rules_directory(self):
+        """Opens a dialog to select a directory, then finds or creates .scanIgnore in it."""
+        initial_dir_browse = self.rules_directory.get() or \
+                            self.scan_directory.get() or \
+                            os.path.expanduser("~")
 
-        filepath_selected = filedialog.asksaveasfilename(
-            title="Select or Create Path-Based Rules File",
+        directory_selected = filedialog.askdirectory(
+            title="Select Rules Directory",
             initialdir=initial_dir_browse,
-            initialfile=".scanIgnore",
-            filetypes=[("ScanIgnore Files", ".scanIgnore"), ("Text Files", "*.txt"), ("All Files", "*.*")],
             parent=self.root
         )
 
-        if not filepath_selected:
-            self._update_status("Rules file selection cancelled.")
+        if not directory_selected:
+            self._update_status("Rules directory selection cancelled.")
             return
 
-        normalized_new_filepath = os.path.normpath(filepath_selected)
-        current_rules_path_val = self.current_rules_filepath.get()
-        current_normalized_path = os.path.normpath(current_rules_path_val) if current_rules_path_val else None
+        normalized_new_directory = os.path.normpath(directory_selected)
+        
+        current_rules_dir_val = self.rules_directory.get()
+        current_normalized_dir = os.path.normpath(current_rules_dir_val) if current_rules_dir_val else None
 
-        if normalized_new_filepath == current_normalized_path:
-            self._update_status("Selected the current rules file. No change.", clear_after_ms=3000)
+        if normalized_new_directory == current_normalized_dir:
+            self._update_status("Selected the current rules directory. No change.", clear_after_ms=3000)
             return
 
         if self.rules_dirty:
-            msg = f"You have unsaved changes in the current scan rules."
-            if current_normalized_path: msg += f" for\n'{os.path.basename(current_normalized_path)}'."
-            msg += "\n\nDiscard changes and switch to the new file?"
-            if not messagebox.askyesno("Unsaved Changes", msg, default=messagebox.NO, parent=self.root):
-                self._update_status("Rules file selection cancelled to keep unsaved changes.")
+            msg = f"You have unsaved changes in the current scan rules"
+            current_rules_path_val = self.current_rules_filepath.get()
+            current_normalized_path = os.path.normpath(current_rules_path_val) if current_rules_path_val else None
+            if current_normalized_path: 
+                msg += f" for\n'{os.path.basename(current_normalized_path)}'."
+            else:
+                msg += "."
+            msg += "\n\nDiscard changes and switch to the new directory?"
+            if not messagebox.askyesno("Unsaved Changes", msg,
+                                    default=messagebox.NO, parent=self.root):
+                self._update_status("Rules directory selection cancelled to keep unsaved changes.")
                 return
-            self.rules_dirty = False
+            self.rules_dirty = False # User consented to discard
 
-        self.current_rules_filepath.set(normalized_new_filepath)
+        # Set the new directory and find/create the .scanIgnore file
+        self._set_rules_directory_and_load(normalized_new_directory, prompt_create=True)
+
+    def _set_rules_directory_and_load(self, directory_path, prompt_create=False):
+        """
+        Sets the rules directory, finds/creates .scanIgnore, updates current_rules_filepath,
+        and loads the rules.
+        """
+        if not directory_path or not os.path.isdir(directory_path):
+             self.rules_directory.set("")
+             self.current_rules_filepath.set("")
+             self._load_rules_from_file() # Clears rules
+             return
+
+        self.rules_directory.set(directory_path)
         
-        # If new file doesn't exist, create it
-        if not os.path.exists(normalized_new_filepath):
-            try:
-                if not rule_manager.create_empty_file(normalized_new_filepath, is_rules_file=True):
-                    self.current_rules_filepath.set("") # Clear path if creation failed
-            except Exception as e_create:
-                messagebox.showerror("File Creation Error", f"Could not create file:\n{normalized_new_filepath}\nError: {e_create}", parent=self.root)
-                self.current_rules_filepath.set("")
+        target_rules_filename = ".scanIgnore" # Standard name
+        target_rules_filepath = os.path.join(directory_path, target_rules_filename)
+        normalized_target_path = os.path.normpath(target_rules_filepath)
 
-        self._load_rules_from_file()
+        if os.path.exists(normalized_target_path) and os.path.isfile(normalized_target_path):
+            # File exists, just set it
+            self.current_rules_filepath.set(normalized_target_path)
+        else:
+            # File does not exist
+            create_file = False
+            if prompt_create:
+                if messagebox.askyesno("Create Rules File?",
+                                     f"The file '{target_rules_filename}' does not exist in the selected directory:\n{directory_path}\n\nDo you want to create it?",
+                                     parent=self.root):
+                    create_file = True
+            
+            if create_file:
+                try:
+                    # rule_manager.create_empty_file shows its own error messagebox on failure
+                    if rule_manager.create_empty_file(normalized_target_path, is_rules_file=True):
+                        self.current_rules_filepath.set(normalized_target_path)
+                        self._update_status(f"Created '{target_rules_filename}'.", clear_after_ms=3000)
+                    else:
+                        # Creation failed, error was shown by create_empty_file
+                        self.current_rules_filepath.set("")
+                        self._update_status(f"Failed to create '{target_rules_filename}'.", clear_after_ms=4000)
+                except Exception as e:
+                    self.current_rules_filepath.set("")
+                    messagebox.showerror("Creation Error", f"An unexpected error occurred while creating '{normalized_target_path}':\n{e}", parent=self.root)
+                    self._update_status(f"Error creating '{target_rules_filename}'.", clear_after_ms=4000)
+            else:
+                # User chose not to create, or not prompted
+                self.current_rules_filepath.set("")
+                if prompt_create: # Only show status if user was involved
+                    self._update_status(f"No rules file created or loaded from '{directory_path}'.", clear_after_ms=3000)
+
+        self._load_rules_from_file() # Load rules from the (newly set or cleared) path
+
 
     def _save_rules_list_changes(self):
         current_path_to_save = self.current_rules_filepath.get()
-        if not current_path_to_save:
-            self._update_status("No scan rules file is active. Please select or create one.")
-            messagebox.showerror("Save Error", "No scan rules file is currently active to save to.", parent=self.root)
-            return
+        rules_dir_active = self.rules_directory.get()
 
+        if not current_path_to_save:
+            # No file path is set. Check if a directory is set.
+            if not rules_dir_active or not os.path.isdir(rules_dir_active):
+                self._update_status("No valid rules directory selected.")
+                messagebox.showerror("Save Error", "No valid rules directory is selected. Please select a directory first.", parent=self.root)
+                return
+            
+            # Directory is set, but file isn't. Prompt to create .scanIgnore.
+            target_rules_filename = ".scanIgnore"
+            target_rules_filepath = os.path.join(rules_dir_active, target_rules_filename)
+            normalized_target_path = os.path.normpath(target_rules_filepath)
+
+            if messagebox.askyesno("Create and Save Rules?",
+                                 f"A '{target_rules_filename}' file is not associated with the current rules directory.\n\nCreate one at:\n{normalized_target_path}\nand save the current rules?",
+                                 parent=self.root):
+                self.current_rules_filepath.set(normalized_target_path)
+                current_path_to_save = normalized_target_path # Update for the save logic below
+            else:
+                self._update_status("Save operation cancelled.", clear_after_ms=3000)
+                return
+        
+        # Proceed with saving, using the (potentially newly set) current_path_to_save
         normalized_current_path_save = os.path.normpath(current_path_to_save)
+        
         if not self.rules_dirty:
             self._update_status(f"No unsaved changes for {os.path.basename(normalized_current_path_save)}.")
             return
@@ -681,19 +770,20 @@ class CodeScannerApp:
 
     # --- Tree View Logic ---
     
+ 
     def _load_default_ignore_patterns(self):
         """Loads name-based ignore patterns from the default file to filter the tree view."""
         self.default_ignore_patterns = {'file': [], 'folder': []}
         try:
             with open(app_config.DEFAULT_IGNORE_PATH, "r", encoding="utf-8") as f:
                 for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"): continue
+                     line = line.strip()
+                     if not line or line.startswith("#"): continue
                     
-                    if line.lower().startswith("file:"):
+                     if line.lower().startswith("file:"):
                         pattern = line[len("file:"):].strip()
                         if pattern: self.default_ignore_patterns['file'].append(pattern)
-                    elif line.lower().startswith("folder:"):
+                     elif line.lower().startswith("folder:"):
                         pattern = line[len("folder:"):].strip()
                         if pattern: self.default_ignore_patterns['folder'].append(pattern)
         except Exception as e:
@@ -724,6 +814,7 @@ class CodeScannerApp:
         # Populate its direct children
         self._populate_children(root_node_id)
         
+  
         # Update visuals for the root node itself, as it might have rules applied
         self._update_tree_visuals_for_items([root_node_id])
 
@@ -735,6 +826,7 @@ class CodeScannerApp:
         if not parent_path:
             return
 
+  
         # Temporarily unbind the event to prevent recursive calls during population
         self.tree.unbind('<<TreeviewOpen>>')
         try:
@@ -783,6 +875,7 @@ class CodeScannerApp:
         if items_to_update_visuals:
             self._update_tree_visuals_for_items(items_to_update_visuals)
             
+ 
         # Re-enable the event binding after population is complete
         self.tree.bind('<<TreeviewOpen>>', self._on_tree_open)
         
@@ -791,6 +884,7 @@ class CodeScannerApp:
         # The 'focus' method gives the item that is about to be opened
         item_id = self.tree.focus()
         
+    
         children = self.tree.get_children(item_id)
         # Only populate if it has a single placeholder child, indicating it's not yet loaded
         if len(children) == 1 and self.tree.item(children[0], 'text') == '...':
@@ -826,10 +920,12 @@ class CodeScannerApp:
                     target_list.remove(full_path)
                     self.rules_dirty = True
 
+  
             # --- Handle Tree Blacklist ---
             elif rule_type == 'tree_blacklist' and is_dir: # Only folders can be blacklisted
                 target_list = self.directory_tree_blacklist
                 if action == 'add' and full_path not in target_list:
+                    
                     target_list.append(full_path)
                     self.directory_tree_blacklist_dirty = True
                 elif action == 'remove' and full_path in target_list:
@@ -892,6 +988,7 @@ class CodeScannerApp:
                 mode_desc = "Whitelist (Including only listed paths)" if filter_mode_val == app_config.FILTER_WHITELIST else "Blacklist (Excluding listed paths)"
                 output_file.write(f"**Mode:** `{mode_desc}`\n")
                 
+  
                 rules_source_display = ""
                 if used_rules_file_display_path:
                     rules_source_display = f"`{os.path.basename(used_rules_file_display_path)}` (from `{used_rules_file_display_path}`)"
@@ -908,12 +1005,14 @@ class CodeScannerApp:
                 def thread_safe_status_update(msg):
                     self.root.after(0, lambda m=msg: self._update_status(m))
 
+      
                 scan_engine.process_directory(
                     scan_dir_norm, output_file, rules_files_for_scan, rules_folders_for_scan,
                     filter_mode_val, level=0, status_callback=thread_safe_status_update,
                     whitelisted_ancestor_folders=initial_whitelisted_ancestors
                 )
         
+ 
             
             def on_scan_complete_actions():
                 self._update_status(f"Scan complete. Output saved to: {save_path_norm}", clear_after_ms=10000)
@@ -970,6 +1069,8 @@ class CodeScannerApp:
         else:
             status_msg_scan += " using current GUI rules (no file associated or rules are in-memory)"
         
+ 
+
         if generate_tree_selected:
             status_msg_scan += ". Directory tree will be generated."
         

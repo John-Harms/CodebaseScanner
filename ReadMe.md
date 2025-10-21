@@ -98,4 +98,4 @@ Ignore files (`.scanIgnore`, `.scanIgnore.defaults`) use a simple text-based for
 Navigate to the directory containing `CodebaseScanner.py` and `.scanIgnore.defaults` in your terminal and run the following command:
 
 ```bash
-~pyinstaller --name CodeScannerApp --onefile --windowed --add-data ".scanIgnore.defaults:." CodeScannerApp.py~
+python -m PyInstaller CodeScannerApp.py --onefile --windowed --name "CodebaseScanner"
