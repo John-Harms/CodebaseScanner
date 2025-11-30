@@ -1,4 +1,18 @@
 {
-    "profiles": {},
-    "last_active_profile_name": null
+    "profiles": {
+        "CodeScanner": {
+            "scan_directory": "C:\\Users\\johnh\\Desktop\\Projects\\AI_Tools\\CodebaseScanner",
+            "save_filepath": "C:\\Users\\johnh\\Downloads\\ProgramCodebaseContext.txt",
+            "rules_directory": "C:\\Users\\johnh\\Desktop\\Projects\\AI_Tools\\CodebaseScanner",
+            "rules_filepath": "C:\\Users\\johnh\\Desktop\\Projects\\AI_Tools\\CodebaseScanner\\.scanIgnore",
+            "filter_mode": "whitelist",
+            "directory_tree_blacklist": [
+                "C:\\Users\\johnh\\Desktop\\Projects\\AI_Tools\\CodebaseScanner\\depreciated",
+                "C:\\Users\\johnh\\Desktop\\Projects\\AI_Tools\\CodebaseScanner\\dist",
+                "C:\\Users\\johnh\\Desktop\\Projects\\AI_Tools\\CodebaseScanner\\.git"
+            ],
+            "generate_directory_tree": true
+        }
+    },
+    "last_active_profile_name": "CodeScanner"
 }

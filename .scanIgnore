@@ -1,6 +1,7 @@
 # Files to ignore/include (full paths)
 file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\CodeScannerApp.py
 file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\CodebaseScanner.py
+file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\QtCodeScannerApp.py
 file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\app_config.py
 file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\dialogs.py
 file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\profile_handler.py
@@ -16,3 +17,4 @@ file: C:\Users\spycy\Documents\Projects\Messing Around\AI-Stuff\CodebaseScanner\
 file: C:\Users\spycy\Documents\Projects\Messing Around\AI-Stuff\CodebaseScanner\ui_widgets.py
 
 # Folders to ignore/include (full paths)
+folder: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\dialogs_qt

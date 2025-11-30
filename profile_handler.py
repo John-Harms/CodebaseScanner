@@ -2,7 +2,6 @@
 
 import os
 import json
-import tkinter.messagebox as messagebox # For showing errors if needed, though typically GUI handles this
 
 def load_profiles(profiles_path):
     """Loads profiles from PROFILES_PATH."""
@@ -18,8 +17,7 @@ def load_profiles(profiles_path):
                 return profiles_data, data.get("last_active_profile_name", None)
         except Exception as e:
             print(f"Error loading profiles from {profiles_path}: {e}")
-            # Consider if this should raise an error or be handled by the caller (GUI)
-            # For now, matching original behavior of printing and returning defaults
+            # Errors will be handled by the GUI caller.
     return {}, None
 
 def save_profiles(profiles, last_active_profile_name, profiles_path):
@@ -35,12 +33,5 @@ def save_profiles(profiles, last_active_profile_name, profiles_path):
         print(f"Profiles saved to: {profiles_path}")
     except Exception as e:
         print(f"Error saving profiles to {profiles_path}: {e}")
-        # The original showed a messagebox here. GUI should handle UI feedback.
-        # This module should ideally just perform the action or raise an error.
-        # For strict functional equivalence of side effects, the messagebox could be here,
-        # but it's better for GUI to handle GUI. Let's assume GUI will catch and display.
-        # To maintain functional equivalence regarding error popups if no GUI is involved,
-        # we might need to pass a callback or let the GUI wrap this call.
-        # Given the context, the main app will likely catch and show the messagebox.
-        # Raising an exception is cleaner for a utility module.
-        raise  # Re-raise for the GUI to catch and display.
+        # Re-raise for the GUI to catch and display the error to the user.
+        raise
