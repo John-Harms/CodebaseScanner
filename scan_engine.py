@@ -1,4 +1,4 @@
-# scan_engine.py
+# CodebaseScanner/scan_engine.py
 
 import os
 from app_config import LANG_MAP, FILTER_BLACKLIST, FILTER_WHITELIST # Import constants
@@ -11,7 +11,8 @@ def get_language_hint(filename):
 def generate_directory_tree_text(start_path, tree_blacklist, prefix="", is_last=True):
     """
     Generates a text-based directory tree.
-    Only includes directory names and respects the tree_blacklist.
+    Includes directory names and file names.
+    Respects the tree_blacklist for directories.
     """
     tree_string = ""
     normalized_start_path = os.path.normpath(start_path)
@@ -30,16 +31,24 @@ def generate_directory_tree_text(start_path, tree_blacklist, prefix="", is_last=
     tree_string += os.path.basename(normalized_start_path) + "/\n"
 
     try:
-        # Get only directories
-        entries = [entry.name for entry in os.scandir(normalized_start_path) if entry.is_dir()]
-        entries.sort()
+        # Get all entries and sort them
+        entries = list(os.scandir(normalized_start_path))
+        entries.sort(key=lambda e: e.name.lower())
     except OSError:
-        entries = [] # Could not list directory, treat as empty
+        entries = []
 
-    for i, entry_name in enumerate(entries):
-        entry_path = os.path.join(normalized_start_path, entry_name)
-        is_last_entry = (i == len(entries) - 1)
-        tree_string += generate_directory_tree_text(entry_path, tree_blacklist, prefix, is_last_entry)
+    count = len(entries)
+    for i, entry in enumerate(entries):
+        is_last_entry = (i == count - 1)
+        if entry.is_dir():
+            tree_string += generate_directory_tree_text(entry.path, tree_blacklist, prefix, is_last_entry)
+        else:
+            tree_string += prefix
+            if is_last_entry:
+                tree_string += "└── "
+            else:
+                tree_string += "├── "
+            tree_string += entry.name + "\n"
 
     return tree_string
 

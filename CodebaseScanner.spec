@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['CodeScannerApp.py'],
+    ['QtCodeScannerApp.py'],
     pathex=[],
     binaries=[],
     datas=[],
