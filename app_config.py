@@ -2,60 +2,74 @@
 
 import os
 import sys
+from pathlib import Path
 
-# --- Constants and Configuration ---
+# --- AppData-based persistent storage ---
+
+APP_NAME = "CodebaseScanner"
+
+def get_appdata_dir() -> str:
+    """
+    Returns the OS-appropriate application data directory for CodebaseScanner.
+    - Windows: %APPDATA%\CodebaseScanner
+    - Linux/Mac: ~/.config/CodebaseScanner
+    Creates the directory if it does not exist.
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA", os.path.expanduser("~"))
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".config")
+    appdata_dir = os.path.join(base, APP_NAME)
+    os.makedirs(appdata_dir, exist_ok=True)
+    return appdata_dir
+
+APPDATA_DIR = get_appdata_dir()
+
+# Profiles JSON lives in AppData
 PROFILES_FILE = "profiles.json"
-# SCRIPT_DIR is the directory of the script file (or _MEIPASS for bundled apps)
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROFILES_PATH = os.path.join(APPDATA_DIR, PROFILES_FILE)
 
-def get_application_persistent_path(filename):
+
+# --- Resource dir (bundled .scanIgnore.defaults lives here) ---
+
+def get_resource_dir() -> str:
     """
-    Determines the appropriate path for persistent application data files like profiles.json.
-    If running as a bundled executable, it's next to the .exe.
-    Otherwise, it's next to the .py script.
+    Returns the directory containing bundled read-only resources such as
+    .scanIgnore.defaults. For frozen (PyInstaller) apps this is _MEIPASS.
     """
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        # Running as a bundled executable (PyInstaller)
-        # sys.executable is the path to the .exe file
-        application_path = os.path.dirname(sys.executable)
-    else:
-        # Running as a normal Python script
-        # Adjust SCRIPT_DIR if this file is in a subdirectory of the main script's original location
-        # Assuming app_config.py is in the same directory as the main CodeScannerApp.py script
-        application_path = os.path.dirname(os.path.abspath(sys.modules['__main__'].__file__))
-    return os.path.join(application_path, filename)
+        return sys._MEIPASS
+    # Running as a normal Python script
+    main_module = sys.modules.get('__main__')
+    main_file = getattr(main_module, '__file__', None)
+    if main_file:
+        return os.path.dirname(os.path.abspath(main_file))
+    # Fallback: use the directory of this config file
+    return os.path.dirname(os.path.abspath(__file__))
 
-PROFILES_PATH = get_application_persistent_path(PROFILES_FILE)
 
-# Default ignore file configuration - .scanIgnore.defaults is bundled with the script
-# and will be found in SCRIPT_DIR (which is sys._MEIPASS for frozen apps)
+APP_RESOURCE_DIR = get_resource_dir()
+
 DEFAULT_IGNORE_FILE = ".scanIgnore.defaults"
-
-# If SCRIPT_DIR needs to point to where the original CodebaseScanner.py was,
-# and app_config.py is in the same directory, this SCRIPT_DIR definition is fine.
-# However, for bundled apps, sys._MEIPASS is the key.
-# Let's refine DEFAULT_IGNORE_PATH to be more robust for bundled vs. script scenarios.
-
-def get_script_or_exe_dir():
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        # Running as a bundled executable
-        return sys._MEIPASS # Resources are here
-    else:
-        # Running as a normal Python script
-        # Assumes app_config.py is in the same directory as the main script
-        return os.path.dirname(os.path.abspath(sys.modules['__main__'].__file__))
-
-APP_RESOURCE_DIR = get_script_or_exe_dir()
 DEFAULT_IGNORE_PATH = os.path.join(APP_RESOURCE_DIR, DEFAULT_IGNORE_FILE)
 
 
-# Default Output Filename
+# --- Downloads folder ---
+
+def get_downloads_folder() -> str:
+    """Returns the user's Downloads folder, falling back to the home directory."""
+    downloads = Path.home() / "Downloads"
+    if downloads.is_dir():
+        return str(downloads)
+    return str(Path.home())
+
+
+# --- Other Constants ---
+
 DEFAULT_OUTPUT_FILENAME = "ProgramCodebaseContext.txt"
 
-# Filter Modes
 FILTER_BLACKLIST = "blacklist"
 FILTER_WHITELIST = "whitelist"
-
 
 # Map common file extensions to Markdown language hints
 LANG_MAP = {

@@ -1,20 +1,140 @@
-# Files to ignore/include (full paths)
-file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\CodeScannerApp.py
-file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\CodebaseScanner.py
-file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\QtCodeScannerApp.py
-file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\app_config.py
-file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\dialogs.py
-file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\profile_handler.py
-file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\rule_manager.py
-file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\scan_engine.py
-file: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\ui_widgets.py
-file: C:\Users\spycy\Documents\Projects\Messing Around\AI-Stuff\CodebaseScanner\CodeScannerApp.py
-file: C:\Users\spycy\Documents\Projects\Messing Around\AI-Stuff\CodebaseScanner\app_config.py
-file: C:\Users\spycy\Documents\Projects\Messing Around\AI-Stuff\CodebaseScanner\dialogs.py
-file: C:\Users\spycy\Documents\Projects\Messing Around\AI-Stuff\CodebaseScanner\profile_handler.py
-file: C:\Users\spycy\Documents\Projects\Messing Around\AI-Stuff\CodebaseScanner\rule_manager.py
-file: C:\Users\spycy\Documents\Projects\Messing Around\AI-Stuff\CodebaseScanner\scan_engine.py
-file: C:\Users\spycy\Documents\Projects\Messing Around\AI-Stuff\CodebaseScanner\ui_widgets.py
+[Files]
+QtCodeScannerApp.py
+dialogs_qt\QtEditDefaultsDialog.py
+dialogs_qt\QtManageProfilesDialog.py
+rule_manager.py
+scan_engine.py
 
-# Folders to ignore/include (full paths)
-folder: C:\Users\johnh\Desktop\Projects\AI_Tools\CodebaseScanner\dialogs_qt
+[Folders]
+
+[TreeBlacklist]
+.git
+.git\hooks
+.git\info
+.git\logs
+.git\logs\refs
+.git\logs\refs\heads
+.git\logs\refs\remotes
+.git\logs\refs\remotes\origin
+.git\objects
+.git\objects\02
+.git\objects\03
+.git\objects\04
+.git\objects\05
+.git\objects\08
+.git\objects\0a
+.git\objects\0b
+.git\objects\0d
+.git\objects\0e
+.git\objects\12
+.git\objects\15
+.git\objects\16
+.git\objects\18
+.git\objects\1b
+.git\objects\1c
+.git\objects\1d
+.git\objects\1e
+.git\objects\22
+.git\objects\26
+.git\objects\27
+.git\objects\28
+.git\objects\29
+.git\objects\2a
+.git\objects\2d
+.git\objects\31
+.git\objects\32
+.git\objects\33
+.git\objects\34
+.git\objects\39
+.git\objects\3c
+.git\objects\3d
+.git\objects\40
+.git\objects\43
+.git\objects\46
+.git\objects\48
+.git\objects\49
+.git\objects\4a
+.git\objects\4e
+.git\objects\4f
+.git\objects\52
+.git\objects\54
+.git\objects\58
+.git\objects\5e
+.git\objects\5f
+.git\objects\61
+.git\objects\68
+.git\objects\6a
+.git\objects\6d
+.git\objects\70
+.git\objects\7b
+.git\objects\7d
+.git\objects\80
+.git\objects\81
+.git\objects\82
+.git\objects\84
+.git\objects\85
+.git\objects\86
+.git\objects\91
+.git\objects\94
+.git\objects\97
+.git\objects\98
+.git\objects\9b
+.git\objects\9c
+.git\objects\9d
+.git\objects\9e
+.git\objects\9f
+.git\objects\a4
+.git\objects\a6
+.git\objects\a7
+.git\objects\aa
+.git\objects\ae
+.git\objects\af
+.git\objects\b1
+.git\objects\b3
+.git\objects\b5
+.git\objects\b6
+.git\objects\b8
+.git\objects\b9
+.git\objects\bc
+.git\objects\bf
+.git\objects\c1
+.git\objects\c2
+.git\objects\c7
+.git\objects\c8
+.git\objects\cf
+.git\objects\d4
+.git\objects\d5
+.git\objects\d6
+.git\objects\d7
+.git\objects\db
+.git\objects\df
+.git\objects\e3
+.git\objects\e4
+.git\objects\e6
+.git\objects\e7
+.git\objects\e8
+.git\objects\ec
+.git\objects\ed
+.git\objects\ef
+.git\objects\f0
+.git\objects\f3
+.git\objects\f4
+.git\objects\f6
+.git\objects\f9
+.git\objects\fa
+.git\objects\fc
+.git\objects\fd
+.git\objects\fe
+.git\objects\info
+.git\objects\pack
+.git\refs
+.git\refs\heads
+.git\refs\remotes
+.git\refs\remotes\origin
+.git\refs\tags
+__pycache__
+build
+build\CodebaseScanner
+build\CodebaseScanner\localpycs
+depreciated
+
