@@ -1,6 +1,7 @@
 [Files]
 QtCodeScannerApp.py
 dialogs_qt\QtEditDefaultsDialog.py
+dialogs_qt\QtJsonScanDialog.py
 dialogs_qt\QtManageProfilesDialog.py
 rule_manager.py
 scan_engine.py

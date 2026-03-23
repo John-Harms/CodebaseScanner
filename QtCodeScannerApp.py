@@ -20,6 +20,7 @@ import rule_manager
 import scan_engine
 from dialogs_qt.QtEditDefaultsDialog import QtEditDefaultsDialog
 from dialogs_qt.QtManageProfilesDialog import QtManageProfilesDialog
+from dialogs_qt.QtJsonScanDialog import QtJsonScanDialog
 
 # ---------------------------------------------------------------------------
 # Stylesheet
@@ -133,7 +134,7 @@ class ScanWorker(QObject):
             with open(p['save_path_norm'], "w", encoding="utf-8") as output_file:
                 if p['generate_tree']:
                     self.status_update.emit("Generating directory tree...")
-                    norm_blacklist = [os.path.normpath(x) for x in p['tree_blacklist']]
+                    norm_blacklist =[os.path.normpath(x) for x in p['tree_blacklist']]
                     tree_header = f"# Directory Tree for: {os.path.basename(p['scan_dir_norm'])}\n\n"
                     tree_structure = scan_engine.generate_directory_tree_text(p['scan_dir_norm'], norm_blacklist)
                     output_file.write(tree_header)
@@ -173,18 +174,14 @@ class ScanWorker(QObject):
 class TreeTokenWorker(QObject):
     """Traverses the directory tree, counts tokens, emits per-item data."""
 
-    # Tune this threshold to balance responsiveness vs. completeness.
-    # Directories whose subtree contains more than this many files will have
-    # token counting skipped entirely and show "⚠ Large" in the Tokens column.
     LARGE_DIR_THRESHOLD = 500
 
-    # Sentinel values emitted as token_count on item_ready:
-    TOKENS_LARGE_DIR   = -1   # dir subtree exceeds file-count threshold
-    TOKENS_TREE_HIDDEN = -3   # dir is in the tree blacklist (shown greyed-out)
+    TOKENS_LARGE_DIR   = -1   
+    TOKENS_TREE_HIDDEN = -3   
 
-    progress = Signal(int, int)           # current, total (0,0 = indeterminate)
-    item_ready = Signal(str, bool, int)   # abs_path, is_dir, token_count
-    finished = Signal(int)                # total tree token estimate
+    progress = Signal(int, int)           
+    item_ready = Signal(str, bool, int)   
+    finished = Signal(int)                
     error = Signal(str)
 
     def __init__(self, scan_dir, default_ignore_patterns, tree_blacklist,
@@ -193,10 +190,9 @@ class TreeTokenWorker(QObject):
         self.scan_dir = scan_dir
         self.default_ignore_patterns = default_ignore_patterns
         self.tree_blacklist = {os.path.normpath(p) for p in tree_blacklist}
-        # Optional scan-rule awareness: files excluded by rules get 0 tokens
-        self.rules_files  = [os.path.normpath(p) for p in (rules_files or [])]
-        self.rules_folders = [os.path.normpath(p) for p in (rules_folders or [])]
-        self.filter_mode  = filter_mode  # None means “count everything”
+        self.rules_files  =[os.path.normpath(p) for p in (rules_files or [])]
+        self.rules_folders =[os.path.normpath(p) for p in (rules_folders or [])]
+        self.filter_mode  = filter_mode 
         self._cancelled = False
 
     def cancel(self):
@@ -204,25 +200,19 @@ class TreeTokenWorker(QObject):
 
     def run(self):
         try:
-            # ------------------------------------------------------------------
             # Pass 1: collect dirs/files and build subtree file-count map.
-            # ------------------------------------------------------------------
             all_files: list[str] = []
-            all_dirs:  list[str] = []
-            blacklisted_dirs_to_show: list[str] = []  # emitted as TOKENS_TREE_HIDDEN
-            # Maps each dir to the count of files directly inside it
+            all_dirs:  list[str] =[]
+            blacklisted_dirs_to_show: list[str] = []
             direct_count: dict[str, int] = {}
 
             for root, dirs, files in os.walk(self.scan_dir):
                 if self._cancelled:
                     return
                 norm_root = os.path.normpath(root)
-                folder_patterns = self.default_ignore_patterns.get('folder', [])
+                folder_patterns = self.default_ignore_patterns.get('folder',[])
 
-                # Separate blacklisted dirs so we can emit them as hidden items
-                # without recursing into them.
-                blacklisted_here = sorted(
-                    [
+                blacklisted_here = sorted([
                         os.path.normpath(os.path.join(norm_root, d))
                         for d in dirs
                         if os.path.normpath(os.path.join(norm_root, d)) in self.tree_blacklist
@@ -231,8 +221,7 @@ class TreeTokenWorker(QObject):
                 )
                 blacklisted_dirs_to_show.extend(blacklisted_here)
 
-                dirs[:] = sorted(
-                    [
+                dirs[:] = sorted([
                         d for d in dirs
                         if os.path.normpath(os.path.join(norm_root, d)) not in self.tree_blacklist
                         and not any(fnmatch.fnmatch(d, p) for p in folder_patterns)
@@ -240,7 +229,7 @@ class TreeTokenWorker(QObject):
                     key=str.lower,
                 )
                 all_dirs.append(norm_root)
-                file_patterns = self.default_ignore_patterns.get('file', [])
+                file_patterns = self.default_ignore_patterns.get('file',[])
                 n = 0
                 for f in sorted(files, key=str.lower):
                     if not any(fnmatch.fnmatch(f, p) for p in file_patterns):
@@ -248,32 +237,23 @@ class TreeTokenWorker(QObject):
                         n += 1
                 direct_count[norm_root] = n
 
-            # ------------------------------------------------------------------
-            # Pass 1b: compute subtree file counts (bottom-up by path depth).
-            # ------------------------------------------------------------------
+            # Pass 1b: compute subtree file counts.
             subtree_count: dict[str, int] = dict(direct_count)
-            # Process deepest paths first so parent accumulations are correct
             for d in sorted(all_dirs, key=lambda x: x.count(os.sep), reverse=True):
                 parent = os.path.normpath(os.path.dirname(d))
                 if parent in subtree_count and parent != d:
                     subtree_count[parent] = subtree_count.get(parent, 0) + subtree_count.get(d, 0)
 
-            # Directories whose subtree exceeds the threshold
             large_dirs: set[str] = {
                 d for d, cnt in subtree_count.items()
                 if cnt > self.LARGE_DIR_THRESHOLD
             }
-            # Also mark every descendant of a large dir as skipped
             skipped_dirs: set[str] = set()
             for d in all_dirs:
                 if any(d == ld or d.startswith(ld + os.sep) for ld in large_dirs):
                     skipped_dirs.add(d)
 
-            # ------------------------------------------------------------------
-            # Pass 2: emit tree structure (dirs first, so UI items exist).
-            # Blacklisted dirs are emitted with TOKENS_TREE_HIDDEN so the UI
-            # can show them greyed-out and let the user remove the blacklist.
-            # ------------------------------------------------------------------
+            # Pass 2: emit tree structure.
             for d in all_dirs:
                 if self._cancelled:
                     return
@@ -285,14 +265,9 @@ class TreeTokenWorker(QObject):
                     return
                 self.item_ready.emit(d, True, self.TOKENS_TREE_HIDDEN)
 
-            # ------------------------------------------------------------------
-            # Pass 3: count tokens, skipping files inside large-dir subtrees
-            # AND files that are excluded by the current scan rules.
-            # ------------------------------------------------------------------
+            # Pass 3: count tokens.
             total = len(all_files)
-            # Precompute: in whitelist mode, treat rules_folders as whitelisted
-            # ancestors so files under them are also counted.
-            whitelisted_parents = list(self.rules_folders) if self.filter_mode is not None else []
+            whitelisted_parents = list(self.rules_folders) if self.filter_mode is not None else[]
 
             for i, fpath in enumerate(all_files):
                 if self._cancelled:
@@ -301,12 +276,9 @@ class TreeTokenWorker(QObject):
                 parent_dir = os.path.normpath(os.path.dirname(fpath))
 
                 if parent_dir in skipped_dirs:
-                    # Part of a large subtree — skip silently.
-                    # The dir item was already marked TOKENS_LARGE_DIR.
                     self.progress.emit(i + 1, total)
                     continue
 
-                # Skip token counting for files excluded by current rules
                 if self.filter_mode is not None:
                     included = scan_engine.should_process_item(
                         fpath, True,
@@ -314,7 +286,6 @@ class TreeTokenWorker(QObject):
                         self.filter_mode, whitelisted_parents
                     )
                     if not included:
-                        # Emit 0 so the item shows — without spending I/O
                         self.item_ready.emit(fpath, False, 0)
                         self.progress.emit(i + 1, total)
                         continue
@@ -323,9 +294,6 @@ class TreeTokenWorker(QObject):
                 self.item_ready.emit(fpath, False, tokens)
                 self.progress.emit(i + 1, total)
 
-            # ------------------------------------------------------------------
-            # Estimate tree tokens for the display bar.
-            # ------------------------------------------------------------------
             tree_tok = scan_engine.estimate_tree_tokens(self.scan_dir, list(self.tree_blacklist))
             self.finished.emit(tree_tok)
         except Exception as e:
@@ -340,11 +308,11 @@ class TreeTokenWorker(QObject):
 class WorkspaceTab(QWidget):
     """Self-contained workspace: one scan profile, one rules file, one tree."""
 
-    dirty_changed = Signal(bool)   # emitted whenever rules_dirty state changes
+    dirty_changed = Signal(bool)
 
     def __init__(self, profiles_ref, parent=None):
         super().__init__(parent)
-        self._profiles_ref = profiles_ref  # shared dict reference from main window
+        self._profiles_ref = profiles_ref  
 
         # State
         self.current_rules_filepath = ""
@@ -353,7 +321,7 @@ class WorkspaceTab(QWidget):
         self.rules_folders: list[str] = []
         self.rules_dirty = False
         self.directory_tree_blacklist: list[str] = []
-        self.default_ignore_patterns: dict = {'file': [], 'folder': []}
+        self.default_ignore_patterns: dict = {'file': [], 'folder':[]}
         self.active_profile_name: str | None = None
 
         # Threading
@@ -478,11 +446,16 @@ class WorkspaceTab(QWidget):
             "font-size: 12pt; font-weight: bold; padding: 12px 24px;"
             "background-color: #1a5276; border-color: #2471a3;"
         )
+        self.run_json_btn = QPushButton("Targeted JSON Scan")
+        self.run_json_btn.setStyleSheet("font-size: 12pt; font-weight: bold; padding: 12px 24px;")
+
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         btn_layout.addWidget(self.run_scan_btn)
         btn_layout.addSpacing(16)
         btn_layout.addWidget(self.run_copy_btn)
+        btn_layout.addSpacing(16)
+        btn_layout.addWidget(self.run_json_btn)
         btn_layout.addStretch()
 
         main_layout.addWidget(splitter, 1)
@@ -499,6 +472,7 @@ class WorkspaceTab(QWidget):
         self.generate_tree_check.stateChanged.connect(self._on_generate_tree_toggle)
         self.run_scan_btn.clicked.connect(lambda: self._run_scan(copy_to_clipboard=False))
         self.run_copy_btn.clicked.connect(lambda: self._run_scan(copy_to_clipboard=True))
+        self.run_json_btn.clicked.connect(self._run_json_scan)
 
         # Defaults
         self.save_path_entry.setText(
@@ -637,8 +611,6 @@ class WorkspaceTab(QWidget):
         self.add_scan_rule_btn.setToolTip(
             f"Mark selected items to {'include in' if is_wl else 'exclude from'} the scan."
         )
-        # Immediately refresh the token bar labels — the same in-memory token
-        # data is re-evaluated against the new filter mode.
         self._recalculate_token_labels()
 
     def _on_generate_tree_toggle(self):
@@ -727,7 +699,7 @@ class WorkspaceTab(QWidget):
 
     def _load_rules_from_file(self):
         if not self.current_rules_filepath:
-            self.rules_files, self.rules_folders, self.directory_tree_blacklist = [], [], []
+            self.rules_files, self.rules_folders, self.directory_tree_blacklist = [], [],[]
         else:
             try:
                 self.rules_files, self.rules_folders, self.directory_tree_blacklist = (
@@ -737,7 +709,7 @@ class WorkspaceTab(QWidget):
                 QMessageBox.critical(self, "Load Error",
                                      f"Could not load scan rules from "
                                      f"{os.path.basename(self.current_rules_filepath)}:\n{e}")
-                self.rules_files, self.rules_folders, self.directory_tree_blacklist = [], [], []
+                self.rules_files, self.rules_folders, self.directory_tree_blacklist = [], [],[]
 
         self._set_dirty(False)
         self._update_all_tree_visuals()
@@ -773,7 +745,7 @@ class WorkspaceTab(QWidget):
     # ------------------------------------------------------------------
 
     def _load_default_ignore_patterns(self):
-        self.default_ignore_patterns = {'file': [], 'folder': []}
+        self.default_ignore_patterns = {'file': [], 'folder':[]}
         try:
             with open(app_config.DEFAULT_IGNORE_PATH, "r", encoding="utf-8") as f:
                 for line in f:
@@ -793,8 +765,6 @@ class WorkspaceTab(QWidget):
             QMessageBox.critical(self, "Input Error", "Please select a valid directory to scan first.")
             return
 
-        # Cancel any running worker and disconnect its signals to prevent
-        # stale item_ready emissions from firing into the freshly-rebuilt tree.
         if self._token_worker:
             try:
                 self._token_worker.cancel()
@@ -824,24 +794,20 @@ class WorkspaceTab(QWidget):
         self._reset_token_labels()
         self._load_default_ignore_patterns()
 
-        # Progress dialog
         self._progress_dlg = QProgressDialog("Counting tokens…", "Cancel", 0, 0, self)
         self._progress_dlg.setWindowTitle("Loading Directory Tree")
         self._progress_dlg.setWindowModality(Qt.WindowModality.WindowModal)
         self._progress_dlg.setMinimumDuration(300)
         self._progress_dlg.setValue(0)
 
-        # Build path → item map for fast lookup during item_ready
         self._path_to_item: dict[str, QTreeWidgetItem] = {}
 
-        # Root item
         root_item = QTreeWidgetItem(self.tree, [f"📁 {os.path.basename(scan_dir)}"])
         root_item.setData(0, Qt.ItemDataRole.UserRole, (scan_dir, True))
         root_item.setData(0, TOKEN_ROLE, 0)
         root_item.setExpanded(True)
         self._path_to_item[os.path.normpath(scan_dir)] = root_item
 
-        # Worker — pass current rules so excluded files are skipped
         self._token_thread = QThread(self)
         self._token_worker = TreeTokenWorker(
             scan_dir,
@@ -861,10 +827,7 @@ class WorkspaceTab(QWidget):
 
         self._token_worker.finished.connect(self._token_thread.quit)
         self._token_worker.error.connect(self._token_thread.quit)
-        # Capture the specific objects this closure is responsible for cleaning
-        # up using local variables. If the user clicks refresh again before this
-        # fires, self._token_thread/_token_worker will have been reassigned —
-        # using locals ensures we always delete the correct (old) objects.
+        
         _thread_to_del = self._token_thread
         _worker_to_del = self._token_worker
         def _cleanup_thread():
@@ -893,27 +856,24 @@ class WorkspaceTab(QWidget):
 
         if is_dir:
             if norm in self._path_to_item:
-                return  # root already created
+                return  
             parent_item = self._path_to_item.get(parent_norm)
             if parent_item is None:
                 return
 
             if token_count == TreeTokenWorker.TOKENS_TREE_HIDDEN:
-                # This directory is tree-blacklisted. Show it greyed-out so
-                # the user can select it and remove it from the blacklist.
-                item = QTreeWidgetItem(parent_item, [f"🚫 {os.path.basename(norm)}"])
+                item = QTreeWidgetItem(parent_item,[f"🚫 {os.path.basename(norm)}"])
                 item.setData(0, Qt.ItemDataRole.UserRole, (norm, True))
                 item.setData(0, TOKEN_ROLE, 0)
                 item.setData(0, HIDDEN_ROLE, True)
-                item.setForeground(0, item.foreground(0))  # placeholder; styled below
+                item.setForeground(0, item.foreground(0))  
                 grey_brush = QBrush(QColor(120, 120, 120))
                 for col in range(self.tree.columnCount()):
                     item.setForeground(col, grey_brush)
-                item.setText(2, "✓")   # always marked as tree-blacklisted
+                item.setText(2, "✓")   
                 item.setText(3, "—")
                 item.setToolTip(0, "Tree-blacklisted: hidden from directory tree output")
                 item.setHidden(not self._show_hidden_dirs)
-                # (item already added to parent_item by QTreeWidgetItem constructor)
             elif token_count == TreeTokenWorker.TOKENS_LARGE_DIR:
                 item = QTreeWidgetItem(parent_item, [f"📁 {os.path.basename(norm)}"])
                 item.setData(0, Qt.ItemDataRole.UserRole, (norm, True))
@@ -932,7 +892,6 @@ class WorkspaceTab(QWidget):
             if parent_item is None:
                 return
 
-            # Check if parent is a large-skipped dir (show ⚠ on files too)
             parent_is_large = (parent_item.text(3) == "⚠ Large")
 
             ext = os.path.splitext(norm)[1].lower()
@@ -943,19 +902,16 @@ class WorkspaceTab(QWidget):
                 item.setData(0, TOKEN_ROLE, 0)
                 item.setText(3, "—")
             else:
-                # Normal file — only count tokens for known code extensions
                 if ext not in app_config.LANG_MAP:
                     token_count = 0
                 item.setData(0, TOKEN_ROLE, token_count)
                 item.setText(3, f"{token_count:,}" if token_count else "—")
 
-                # Bubble token count up to all ancestor dirs
                 p = parent_item
                 while p is not None:
                     existing = p.data(0, TOKEN_ROLE) or 0
                     p.setData(0, TOKEN_ROLE, existing + token_count)
                     p_tok = p.data(0, TOKEN_ROLE) or 0
-                    # Don't overwrite a ⚠ Large label on a parent dir
                     if p.text(3) != "⚠ Large":
                         p.setText(3, f"{p_tok:,}" if p_tok else "—")
                     p = p.parent()
@@ -979,11 +935,9 @@ class WorkspaceTab(QWidget):
     # ------------------------------------------------------------------
 
     def _on_tree_item_expanded(self, item: QTreeWidgetItem):
-        # All items already populated by worker; this is a no-op now
         pass
 
     def _toggle_show_hidden_dirs(self, checked: bool):
-        """Show or hide tree-blacklisted directories in the tree view."""
         self._show_hidden_dirs = checked
         self.show_hidden_btn.setText("👁 Hide Hidden Dirs" if checked else "👁 Show Hidden Dirs")
         it = QTreeWidgetItemIterator(self.tree)
@@ -1013,12 +967,6 @@ class WorkspaceTab(QWidget):
             return
 
         if rule_type == 'tree_blacklist':
-            # ---------------------------------------------------------------
-            # Tree blacklist: only add/remove the DIRECTLY selected directories.
-            # scan_engine.generate_directory_tree_text already recursively
-            # skips entire subtrees when a parent dir is blacklisted, so
-            # there is no need to store every child path.
-            # ---------------------------------------------------------------
             changed = False
             for item in selected:
                 data = item.data(0, Qt.ItemDataRole.UserRole)
@@ -1035,7 +983,6 @@ class WorkspaceTab(QWidget):
                     changed = True
             if changed:
                 self._set_dirty(True)
-                # Update visuals for the selected items and their descendants
                 all_affected: set = set()
                 for item in selected:
                     all_affected.update(self._get_item_and_all_descendants(item))
@@ -1043,9 +990,6 @@ class WorkspaceTab(QWidget):
                 self._recalculate_token_labels()
             return
 
-        # -------------------------------------------------------------------
-        # Scan rules: expand to all descendants (include/exclude whole trees)
-        # -------------------------------------------------------------------
         items_to_process: set = set()
         for item in selected:
             items_to_process.update(self._get_item_and_all_descendants(item))
@@ -1084,7 +1028,7 @@ class WorkspaceTab(QWidget):
     def _update_all_tree_visuals(self):
         if self.tree.topLevelItemCount() == 0:
             return
-        all_items = []
+        all_items =[]
         it = QTreeWidgetItemIterator(self.tree)
         while it.value():
             all_items.append(it.value())
@@ -1102,7 +1046,6 @@ class WorkspaceTab(QWidget):
         self.lbl_total_tokens.setText("Total: — tk")
 
     def _recalculate_token_labels(self):
-        """Sums token data from in-memory QTreeWidgetItems — no disk I/O."""
         scan_tokens = 0
         it = QTreeWidgetItemIterator(self.tree)
         while it.value():
@@ -1111,11 +1054,10 @@ class WorkspaceTab(QWidget):
             if data:
                 full_path, is_dir = data
                 if not is_dir:
-                    # Include file only if it passes the current filter mode
                     if scan_engine.should_process_item(
                         full_path, True,
                         self.rules_files, self.rules_folders,
-                        self.filter_mode, []
+                        self.filter_mode,[]
                     ):
                         tok = item.data(0, TOKEN_ROLE) or 0
                         scan_tokens += tok
@@ -1148,6 +1090,7 @@ class WorkspaceTab(QWidget):
 
         self.run_scan_btn.setEnabled(False)
         self.run_copy_btn.setEnabled(False)
+        self.run_json_btn.setEnabled(False)
 
         scan_params = {
             'scan_dir_norm': os.path.normpath(self.scan_dir_entry.text()),
@@ -1180,9 +1123,110 @@ class WorkspaceTab(QWidget):
 
         self._scan_thread.start()
 
+    def _run_json_scan(self):
+        """Executes a targeted whitelist scan dynamically populated by parsed JSON filenames."""
+        ok, msg = self.validate_for_scan()
+        if not ok:
+            QMessageBox.critical(self, "Input Error", msg)
+            return
+
+        dialog = QtJsonScanDialog(self)
+        if not dialog.exec():
+            return
+
+        req_files_lower = {f.lower() for f in dialog.req_files}
+        found_files = {}
+
+        scan_dir = os.path.normpath(self.scan_dir_entry.text())
+        tree_blacklist = {os.path.normpath(p) for p in self.directory_tree_blacklist}
+        
+        self._load_default_ignore_patterns()
+        folder_patterns = self.default_ignore_patterns.get('folder',[])
+
+        # Traverse directory, actively skipping blacklisted/ignored paths in-place
+        for root, dirs, files in os.walk(scan_dir):
+            norm_root = os.path.normpath(root)
+            
+            dirs[:] =[
+                d for d in dirs
+                if os.path.normpath(os.path.join(norm_root, d)) not in tree_blacklist
+                and not any(fnmatch.fnmatch(d, p) for p in folder_patterns)
+            ]
+
+            for f in files:
+                f_lower = f.lower()
+                if f_lower in req_files_lower and f_lower not in found_files:
+                    found_files[f_lower] = os.path.normpath(os.path.join(norm_root, f))
+                    
+            if len(found_files) == len(req_files_lower):
+                break
+
+        if len(found_files) == 0:
+            QMessageBox.critical(self, "Scan Failed", "None of the requested files were found in the scope.")
+            return
+
+        missing = req_files_lower - set(found_files.keys())
+        if missing:
+            missing_str = "\n".join(missing)
+            reply = QMessageBox.warning(
+                self,
+                "Missing Files",
+                f"The following requested files were not found:\n{missing_str}\n\nProceed with the found files?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
+
+        save_path = self.save_path_entry.text()
+        save_dir = os.path.dirname(save_path)
+        if save_dir and not os.path.exists(save_dir):
+            try:
+                os.makedirs(save_dir, exist_ok=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Input Error", f"Could not create save directory:\n{save_dir}\nError: {e}")
+                return
+
+        self.run_scan_btn.setEnabled(False)
+        self.run_copy_btn.setEnabled(False)
+        self.run_json_btn.setEnabled(False)
+
+        # Build scan parameters targeting only the found matches
+        scan_params = {
+            'scan_dir_norm': scan_dir,
+            'save_path_norm': os.path.normpath(save_path),
+            'rules_files': list(found_files.values()),
+            'rules_folders':[],
+            'filter_mode': app_config.FILTER_WHITELIST,
+            'rules_path_display': "Targeted JSON Scan",
+            'rules_dirty': False,
+            'generate_tree': self.generate_tree_check.isChecked(),
+            'tree_blacklist': list(self.directory_tree_blacklist),
+            'copy_to_clipboard': False,
+        }
+
+        self._scan_thread = QThread(self)
+        self._scan_worker = ScanWorker(scan_params)
+        self._scan_worker.moveToThread(self._scan_thread)
+
+        self._scan_thread.started.connect(self._scan_worker.run)
+        self._scan_worker.scan_finished.connect(self._on_scan_complete)
+        self._scan_worker.scan_error.connect(self._on_scan_error)
+        self._scan_worker.status_update.connect(
+            lambda msg: self.window()._update_status(msg) if hasattr(self.window(), '_update_status') else None
+        )
+
+        self._scan_worker.scan_finished.connect(self._scan_thread.quit)
+        self._scan_worker.scan_error.connect(self._scan_thread.quit)
+        self._scan_thread.finished.connect(self._scan_worker.deleteLater)
+        self._scan_thread.finished.connect(self._scan_thread.deleteLater)
+
+        self._scan_thread.start()
+
     def _on_scan_complete(self, save_path: str):
         self.run_scan_btn.setEnabled(True)
         self.run_copy_btn.setEnabled(True)
+        self.run_json_btn.setEnabled(True)
 
         p = self._scan_worker.scan_params
         if hasattr(self.window(), '_update_status'):
@@ -1204,6 +1248,7 @@ class WorkspaceTab(QWidget):
     def _on_scan_error(self, error_msg: str, tb: str):
         self.run_scan_btn.setEnabled(True)
         self.run_copy_btn.setEnabled(True)
+        self.run_json_btn.setEnabled(True)
         if hasattr(self.window(), '_update_status'):
             self.window()._update_status(f"Error during scan: {error_msg}", 10000)
         print(f"Full scan error:\n{tb}")
@@ -1269,7 +1314,6 @@ class CodeScannerApp(QMainWindow):
 
     def _open_initial_tab(self):
         tab = self._create_tab()
-        # Try to restore last active profile
         if self.last_active_profile_name and self.last_active_profile_name in self.profiles:
             tab.apply_profile_settings(self.last_active_profile_name, self.profiles)
             self._refresh_tab_title(0)
@@ -1305,7 +1349,6 @@ class CodeScannerApp(QMainWindow):
             if reply == QMessageBox.StandardButton.No:
                 return
         self.tab_widget.removeTab(index)
-        # Always keep at least one tab
         if self.tab_widget.count() == 0:
             self._create_tab()
         self._update_new_tab_action()
@@ -1437,7 +1480,6 @@ class CodeScannerApp(QMainWindow):
         dialog = QtManageProfilesDialog(self, self.profiles, active_name, self)
         dialog.exec()
 
-    # Public slot called by QtManageProfilesDialog
     def _execute_load_profile(self, profile_name: str) -> bool:
         tab = self._current_tab()
         if not tab:
@@ -1462,7 +1504,6 @@ class CodeScannerApp(QMainWindow):
         if self.last_active_profile_name == profile_name:
             self.last_active_profile_name = None
 
-        # Clear active name on any tab using this profile
         for i in range(self.tab_widget.count()):
             tab: WorkspaceTab = self.tab_widget.widget(i)
             if isinstance(tab, WorkspaceTab) and tab.active_profile_name == profile_name:
